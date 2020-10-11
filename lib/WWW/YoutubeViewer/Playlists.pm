@@ -20,6 +20,11 @@ WWW::YoutubeViewer::Playlists - Youtube playlists handle.
 
 sub _make_playlists_url {
     my ($self, %opts) = @_;
+
+    if (not exists $opts{'part'}) {
+        $opts{'part'} = 'snippet,contentDetails';
+    }
+
     $self->_make_feed_url(
                           'playlists',
                           pageToken => $self->page_token,
@@ -34,7 +39,7 @@ sub get_playlist_id {
     my $res = $self->_get_results($url);
 
     ref($res->{results}{items}) eq 'ARRAY' || return;
-    @{$res->{results}{items}} || return;
+    @{$res->{results}{items}}              || return;
 
     return $res->{results}{items}[0]{contentDetails}{relatedPlaylists}{$playlist_name};
 }
@@ -47,8 +52,8 @@ PlaylistIDs can be separated by commas.
 =cut
 
 sub playlist_from_id {
-    my ($self, $id) = @_;
-    $self->_get_results($self->_make_playlists_url(id => $id));
+    my ($self, $id, $part) = @_;
+    $self->_get_results($self->_make_playlists_url(id => $id, part => ($part // 'snippet')));
 }
 
 =head2 playlists($channel_id)
@@ -58,8 +63,14 @@ Get and return playlists from a channel ID.
 =cut
 
 sub playlists {
-    my ($self, $id) = @_;
-    $self->_get_results($self->_make_playlists_url(($id and $id ne 'mine') ? (channelId => $id) : (mine => 'true')));
+    my ($self, $channel_id) = @_;
+    $self->_get_results(
+        $self->_make_playlists_url(
+              ($channel_id and $channel_id ne 'mine')
+            ? (channelId => $channel_id)
+            : do { $self->get_access_token() // return; (mine => 'true') }
+        )
+    );
 }
 
 =head2 playlists_from_username($username)
@@ -70,7 +81,7 @@ Get and return the playlists created for a given username.
 
 sub playlists_from_username {
     my ($self, $username) = @_;
-    my $channel_id = $self->channel_id_from_username($username);
+    my $channel_id = $self->channel_id_from_username($username) // $username;
     $self->playlists($channel_id);
 }
 
@@ -82,6 +93,7 @@ Get and return your playlists.
 
 sub my_playlists {
     my ($self) = @_;
+    $self->get_access_token() // return;
     $self->_get_results($self->_make_playlists_url(mine => 'true'));
 }
 

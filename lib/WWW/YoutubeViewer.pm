@@ -4,12 +4,20 @@ use utf8;
 use 5.016;
 use warnings;
 
+use Memoize;
+
+memoize('_get_video_info');
+memoize('_ytdl_is_available');
+memoize('_extract_from_ytdl');
+memoize('_extract_from_invidious');
+
 use parent qw(
   WWW::YoutubeViewer::Search
   WWW::YoutubeViewer::Videos
   WWW::YoutubeViewer::Channels
   WWW::YoutubeViewer::Playlists
   WWW::YoutubeViewer::ParseJSON
+  WWW::YoutubeViewer::Activities
   WWW::YoutubeViewer::Subscriptions
   WWW::YoutubeViewer::PlaylistItems
   WWW::YoutubeViewer::CommentThreads
@@ -23,7 +31,7 @@ WWW::YoutubeViewer - A very easy interface to YouTube.
 
 =cut
 
-our $VERSION = '3.3.3';
+our $VERSION = '3.7.9';
 
 =head1 SYNOPSIS
 
@@ -40,65 +48,75 @@ my %valid_options = (
 
     # Main options
     v               => {valid => q[],                                                    default => 3},
-    page            => {valid => [qr/^(?!0+\z)\d+\z/],                                   default => 1},
-    http_proxy      => {valid => [qr{.}],                                                default => undef},
-    hl              => {valid => [qr/^\w+(?:[\-_]\w+)?\z/],                              default => undef},
+    page            => {valid => qr/^(?!0+\z)\d+\z/,                                     default => 1},
+    http_proxy      => {valid => qr/./,                                                  default => undef},
+    hl              => {valid => qr/^\w+(?:[\-_]\w+)?\z/,                                default => undef},
     maxResults      => {valid => [1 .. 50],                                              default => 10},
-    topicId         => {valid => [qr/^./],                                               default => undef},
+    topicId         => {valid => qr/./,                                                  default => undef},
     order           => {valid => [qw(relevance date rating viewCount title videoCount)], default => undef},
-    publishedAfter  => {valid => [qr/^\d+/],                                             default => undef},
-    publishedBefore => {valid => [qr/^\d+/],                                             default => undef},
-    channelId       => {valid => [qr/^[-\w]{2,}\z/],                                     default => undef},
+    publishedAfter  => {valid => qr/^\d+/,                                               default => undef},
+    publishedBefore => {valid => qr/^\d+/,                                               default => undef},
+    channelId       => {valid => qr/^[-\w]{2,}\z/,                                       default => undef},
     channelType     => {valid => [qw(any show)],                                         default => undef},
 
     # Video only options
     videoCaption    => {valid => [qw(any closedCaption none)],     default => undef},
     videoDefinition => {valid => [qw(any high standard)],          default => undef},
-    videoCategoryId => {valid => [qr/^\d+\z/],                     default => undef},
+    videoCategoryId => {valid => qr/^\d+\z/,                       default => undef},
     videoDimension  => {valid => [qw(any 2d 3d)],                  default => undef},
     videoDuration   => {valid => [qw(any short medium long)],      default => undef},
     videoEmbeddable => {valid => [qw(any true)],                   default => undef},
     videoLicense    => {valid => [qw(any creativeCommon youtube)], default => undef},
     videoSyndicated => {valid => [qw(any true)],                   default => undef},
     eventType       => {valid => [qw(completed live upcoming)],    default => undef},
-    chart           => {valid => [qw(mostPopular)],                default => 'mostPopular'},
+    chart           => {valid => [qw(mostPopular)],                default => undef},
 
-    regionCode        => {valid => [qr/^[A-Z]{2}\z/i],         default => undef},
-    relevanceLanguage => {valid => [qr/^[a-z](?:\-\w+)?\z/i],  default => undef},
+    regionCode        => {valid => qr/^[A-Z]{2}\z/i,           default => undef},
+    relevanceLanguage => {valid => qr/^[a-z]+(?:\-\w+)?\z/i,   default => undef},
     safeSearch        => {valid => [qw(none moderate strict)], default => undef},
     videoType         => {valid => [qw(any episode movie)],    default => undef},
 
+    comments_order      => {valid => [qw(time relevance)],                default => 'time'},
     subscriptions_order => {valid => [qw(alphabetical relevance unread)], default => undef},
 
-    # Others
-    debug       => {valid => [0 .. 2],     default => 0},
-    lwp_timeout => {valid => [qr/^\d+\z/], default => 1},
-    key         => {valid => [qr/^.{5}/],  default => undef},
-    config_dir  => {valid => [qr/^./],     default => q{.}},
-    cache_dir   => {valid => [qr/^./],     default => q{.}},
+    # Misc
+    debug       => {valid => [0 .. 3],   default => 0},
+    timeout     => {valid => qr/^\d+\z/, default => 10},
+    config_dir  => {valid => qr/^./,     default => q{.}},
+    cache_dir   => {valid => qr/^./,     default => q{.}},
+    cookie_file => {valid => qr/^./,     default => undef},
+
+    # Support for youtube-dl
+    ytdl     => {valid => [1, 0], default => 1},
+    ytdl_cmd => {valid => qr/\w/, default => "youtube-dl"},
 
     # Booleans
-    lwp_env_proxy => {valid => [1, 0], default => 1},
-    escape_utf8   => {valid => [1, 0], default => 0},
+    env_proxy   => {valid => [1, 0], default => 1},
+    escape_utf8 => {valid => [1, 0], default => 0},
+    prefer_mp4  => {valid => [1, 0], default => 0},
+    prefer_av1  => {valid => [1, 0], default => 0},
 
-    # OAuth stuff
-    client_id     => {valid => [qr/^.{5}/], default => undef},
-    client_secret => {valid => [qr/^.{5}/], default => undef},
-    redirect_uri  => {valid => [qr/^.{5}/], default => undef},
-    access_token  => {valid => [qr/^.{5}/], default => undef},
-    refresh_token => {valid => [qr/^.{5}/], default => undef},
+    # API/OAuth
+    key           => {valid => qr/^.{15}/, default => undef},
+    client_id     => {valid => qr/^.{15}/, default => undef},
+    client_secret => {valid => qr/^.{15}/, default => undef},
+    redirect_uri  => {valid => qr/^.{15}/, default => 'urn:ietf:wg:oauth:2.0:oob'},
+    access_token  => {valid => qr/^.{15}/, default => undef},
+    refresh_token => {valid => qr/^.{15}/, default => undef},
 
-    authentication_file => {valid => [qr/^./], default => undef},
+    authentication_file => {valid => qr/^./, default => undef},
 
-    # No input value alowed
+    # No input value allowed
     feeds_url        => {valid => q[], default => 'https://www.googleapis.com/youtube/v3/'},
     video_info_url   => {valid => q[], default => 'https://www.youtube.com/get_video_info'},
     oauth_url        => {valid => q[], default => 'https://accounts.google.com/o/oauth2/'},
     video_info_args  => {valid => q[], default => '?video_id=%s&el=detailpage&ps=default&eurl=&gl=US&hl=en'},
     www_content_type => {valid => q[], default => 'application/x-www-form-urlencoded'},
 
+#<<<
     # LWP user agent
-    lwp_agent => {valid => [qr/^.{5}/], default => 'Mozilla/5.0 (X11; U; Linux i686; gzip; en-US) Chrome/10.0.648.45'},
+    user_agent => {valid => qr/^.{5}/, default => 'Mozilla/5.0 (Windows NT 10.0; Win64; gzip; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/85.0.0.0 Safari/537.36'},
+#>>>
 );
 
 sub _our_smartmatch {
@@ -106,7 +124,7 @@ sub _our_smartmatch {
 
     $value // return 0;
 
-    if (ref($arg) eq '') {
+    if (not ref($arg)) {
         return ($value eq $arg);
     }
 
@@ -128,7 +146,7 @@ sub _our_smartmatch {
 
     foreach my $key (keys %valid_options) {
 
-        if (ref $valid_options{$key}{valid} eq 'ARRAY') {
+        if (ref($valid_options{$key}{valid})) {
 
             # Create the 'set_*' subroutines
             *{__PACKAGE__ . '::set_' . $key} = sub {
@@ -171,8 +189,6 @@ sub new {
         }
     }
 
-    $self->load_authentication_tokens();
-
     foreach my $invalid_key (keys %opts) {
         warn "Invalid key: '${invalid_key}'";
     }
@@ -181,9 +197,9 @@ sub new {
 }
 
 sub page_token {
-    my ($self) = @_;
+    my ($self, $number) = @_;
 
-    my $page = $self->get_page;
+    my $page = $number // $self->get_page;
 
     # Don't generate the token for the first page
     return undef if $page == 1;
@@ -219,7 +235,7 @@ sub escape_string {
 
 =head2 set_lwp_useragent()
 
-Intializes the LWP::UserAgent module and returns it.
+Initializes the LWP::UserAgent module and returns it.
 
 =cut
 
@@ -231,11 +247,14 @@ sub set_lwp_useragent {
           // do { require LWP::UserAgent; 'LWP::UserAgent' }
     );
 
-    $self->{lwp} = $lwp->new(
+    my $agent = $lwp->new(
 
-        timeout       => $self->get_lwp_timeout,
+        cookie_jar    => {},                      # temporary cookies
+        timeout       => $self->get_timeout,
         show_progress => $self->get_debug,
-        agent         => $self->get_lwp_agent,
+        agent         => $self->get_user_agent,
+
+        ssl_opts => {verify_hostname => 1},
 
         $lwp eq 'LWP::UserAgent::Cached'
         ? (
@@ -244,51 +263,75 @@ sub set_lwp_useragent {
                my ($response) = @_;
                my $code = $response->code;
 
-               $code >= 500                                # do not cache any bad response
-                 or $code == 401                           # don't cache an unauthorized response
+               $code >= 300                                # do not cache any bad response
                  or $response->request->method ne 'GET'    # cache only GET requests
 
                  # don't cache if "cache-control" specifies "max-age=0" or "no-store"
-                 or $response->header('cache-control') =~ /\b(?:max-age=0|no-store)\b/
+                 or (($response->header('cache-control') // '') =~ /\b(?:max-age=0|no-store)\b/)
 
                  # don't cache video or audio files
-                 or $response->header('content-type') =~ /\b(?:video|audio)\b/;
+                 or (($response->header('content-type') // '') =~ /\b(?:video|audio)\b/);
            },
 
            recache_if => sub {
                my ($response, $path) = @_;
-               not($response->is_fresh)                    # recache if the response expired
+               not($response->is_fresh)                          # recache if the response expired
                  or ($response->code == 404 && -M $path > 1);    # recache any 404 response older than 1 day
            }
           )
         : (),
 
-        env_proxy => (defined($self->get_http_proxy) ? 0 : $self->get_lwp_env_proxy),
+        env_proxy => (defined($self->get_http_proxy) ? 0 : $self->get_env_proxy),
     );
 
     require LWP::ConnCache;
-    my $cache = LWP::ConnCache->new;
+    state $cache = LWP::ConnCache->new;
     $cache->total_capacity(undef);                               # no limit
 
-    my $accepted_encodings = do {
+    state $accepted_encodings = do {
         require HTTP::Message;
         HTTP::Message::decodable();
     };
 
-    my $agent = $self->{lwp};
-    $agent->ssl_opts(Timeout => 30);
+    $agent->ssl_opts(Timeout => $self->get_timeout);
     $agent->default_header('Accept-Encoding' => $accepted_encodings);
     $agent->conn_cache($cache);
     $agent->proxy(['http', 'https'], $self->get_http_proxy) if defined($self->get_http_proxy);
 
-    #my $http_proxy = $agent->proxy('http');
-    #if (defined($http_proxy)) {
-    #    $agent->proxy('https', $http_proxy) if (!defined($agent->proxy('https')));
-    #    $agent->timeout(30);
-    #}
+    my $cookie_file = $self->get_cookie_file;
 
-    push @{$self->{lwp}->requests_redirectable}, 'POST';
-    return $self->{lwp};
+    if (defined($cookie_file) and -f $cookie_file) {
+
+        if ($self->get_debug) {
+            say STDERR ":: Using cookies from: $cookie_file";
+        }
+
+        ## Netscape HTTP Cookies
+
+        # Chrome extension:
+        #   https://chrome.google.com/webstore/detail/cookiestxt/njabckikapfpffapmjgojcnbfjonfjfg
+
+        # Firefox extension:
+        #   https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/
+
+        # See also:
+        #   https://github.com/ytdl-org/youtube-dl#how-do-i-pass-cookies-to-youtube-dl
+
+        require HTTP::Cookies::Netscape;
+
+        my $cookies = HTTP::Cookies::Netscape->new(
+                                                   hide_cookie2 => 1,
+                                                   autosave     => 1,
+                                                   file         => $cookie_file,
+                                                  );
+
+        $cookies->load;
+        $agent->cookie_jar($cookies);
+    }
+
+    push @{$agent->requests_redirectable}, 'POST';
+    $self->{lwp} = $agent;
+    return $agent;
 }
 
 =head2 prepare_access_token()
@@ -307,7 +350,7 @@ sub prepare_access_token {
     return;
 }
 
-sub _get_lwp_header {
+sub _auth_lwp_header {
     my ($self) = @_;
 
     my %lwp_header;
@@ -316,6 +359,11 @@ sub _get_lwp_header {
     }
 
     return %lwp_header;
+}
+
+sub _warn_reponse_error {
+    my ($resp, $url) = @_;
+    warn sprintf("[%s] Error occurred on URL: %s\n", $resp->status_line, $url =~ s/([&?])key=(.*?)&/${1}key=[...]&/r);
 }
 
 =head2 lwp_get($url, %opt)
@@ -337,8 +385,12 @@ sub lwp_get {
     $url // return;
     $self->{lwp} // $self->set_lwp_useragent();
 
-    my %lwp_header = ($opt{simple} ? () : $self->_get_lwp_header);
-    my $response = $self->{lwp}->get($url, %lwp_header);
+    if (not defined($self->get_key)) {
+        return undef if not $opt{simple};
+    }
+
+    my %lwp_header = ($opt{simple} ? () : $self->_auth_lwp_header);
+    my $response   = $self->{lwp}->get($url, %lwp_header);
 
     if ($response->is_success) {
         return $response->decoded_content;
@@ -351,7 +403,7 @@ sub lwp_get {
                 $self->set_access_token($refresh_token->{access_token});
 
                 # Don't be tempted to use recursion here, because bad things will happen!
-                $response = $self->{lwp}->get($url, $self->_get_lwp_header);
+                $response = $self->{lwp}->get($url, $self->_auth_lwp_header);
 
                 if ($response->is_success) {
                     $self->save_authentication_tokens();
@@ -385,7 +437,7 @@ sub lwp_get {
         return $self->lwp_get($url, %opt, depth => $opt{depth} + 1);
     }
 
-    warn '[' . $response->status_line . "] Error occured on URL: $url\n";
+    _warn_reponse_error($response, $url);
     return;
 }
 
@@ -406,7 +458,7 @@ sub lwp_post {
         return $response->decoded_content;
     }
     else {
-        warn '[' . $response->status_line() . "] Error occurred on URL: $url\n";
+        _warn_reponse_error($response, $url);
     }
 
     return;
@@ -419,20 +471,9 @@ Downloads the $url into $output_file. Returns true on success.
 =cut
 
 sub lwp_mirror {
-    my ($self, $url, $name) = @_;
-
+    my ($self, $url, $output_file) = @_;
     $self->{lwp} // $self->set_lwp_useragent();
-
-    my $response = $self->{lwp}->mirror($url, $name);
-
-    if ($response->is_success) {
-        return 1;
-    }
-    else {
-        warn '[' . $response->status_line() . "] Error occured on URL: $url\n";
-    }
-
-    return;
+    $self->{lwp}->mirror($url, $output_file);
 }
 
 sub _get_results {
@@ -494,39 +535,201 @@ sub _make_feed_url {
     $self->get_feeds_url() . $path . '?' . $self->default_arguments(%args);
 }
 
-sub _get_formats_from_ytdl {
+sub get_invidious_instances {
+    my ($self) = @_;
+
+    require File::Spec;
+    my $instances_file = File::Spec->catfile($self->get_config_dir, 'instances.json');
+
+    # Get the "instances.json" file when the local copy is too old or non-existent
+    if ((not -e $instances_file) or (-M _) > 1 / 24) {
+
+        require LWP::UserAgent;
+
+        my $lwp = LWP::UserAgent->new(timeout => $self->get_timeout);
+        $lwp->show_progress(1) if $self->get_debug;
+        my $resp = $lwp->get("https://instances.invidio.us/instances.json");
+
+        $resp->is_success() or return;
+
+        my $json = $resp->decoded_content() || return;
+        open(my $fh, '>', $instances_file) or return;
+        print $fh $json;
+        close $fh;
+    }
+
+    open(my $fh, '<', $instances_file) or return;
+
+    my $json_string = do {
+        local $/;
+        <$fh>;
+    };
+
+    $self->parse_json_string($json_string);
+}
+
+sub select_good_invidious_instances {
+    my ($self) = @_;
+
+    state $instances = $self->get_invidious_instances;
+
+    ref($instances) eq 'ARRAY' or return;
+
+    my %ignored = (
+                   'yewtu.be'                 => 1,
+                   'invidiou.site'            => 1,
+                   'invidious.xyz'            => 1,
+                   'vid.mint.lgbt'            => 1,
+                   'invidious.ggc-project.de' => 1,
+                   'invidious.toot.koeln'     => 1,
+                   'invidious.snopyta.org'    => 1,    # too popular == too slow
+                  );
+
+    my @candidates =
+      grep { not $ignored{$_->[0]} }
+      grep { ref($_->[1]{monitor}) eq 'HASH' ? ($_->[1]{monitor}{statusClass} eq 'success') : 1 }
+      grep { lc($_->[1]{type} // '') eq 'https' } @$instances;
+
+    if ($self->get_debug) {
+
+        my @hosts = map { $_->[0] } @candidates;
+        my $count = scalar(@candidates);
+
+        print STDERR ":: Found $count invidious instances: @hosts\n";
+    }
+
+    return @candidates;
+}
+
+sub _extract_from_invidious {
     my ($self, $videoID) = @_;
 
-    ((state $x = $self->proxy_system('youtube-dl', '--version')) == 0)
-      || return;
+    my @instances = $self->select_good_invidious_instances();
 
-    my $json = $self->proxy_stdout('youtube-dl', '--all-formats', '--dump-single-json',
-                                   quotemeta("https://www.youtube.com/watch?v=" . $videoID));
+    if (@instances) {
+        require List::Util;
+        @instances = List::Util::shuffle(map { $_->[0] } @instances);
+        push @instances, 'invidious.snopyta.org';
+    }
+    else {
+        @instances = qw(
+          invidious.tube
+          invidious.site
+          invidious.fdn.fr
+          invidious.snopyta.org
+          );
+    }
 
-    my @array;
-    my $ref = $self->parse_json_string($json) // return;
+    if ($self->get_debug) {
+        print STDERR ":: Invidious instances: @instances\n";
+    }
+
+    my $tries      = 2 * scalar(@instances);
+    my $instance   = shift(@instances);
+    my $url_format = "https://%s/api/v1/videos/%s?fields=formatStreams,adaptiveFormats";
+    my $url        = sprintf($url_format, $instance, $videoID);
+
+    my $resp = $self->{lwp}->get($url);
+
+    while (not $resp->is_success() and --$tries >= 0) {
+        $url  = sprintf($url_format, shift(@instances), $videoID) if (@instances and ($tries % 2 == 0));
+        $resp = $self->{lwp}->get($url);
+    }
+
+    $resp->is_success() || return;
+
+    my $json = $resp->decoded_content()        // return;
+    my $ref  = $self->parse_json_string($json) // return;
+
+    my @formats;
+
+    # The entries are already in the format that we want.
+    if (exists($ref->{adaptiveFormats}) and ref($ref->{adaptiveFormats}) eq 'ARRAY') {
+        push @formats, @{$ref->{adaptiveFormats}};
+    }
+
+    if (exists($ref->{formatStreams}) and ref($ref->{formatStreams}) eq 'ARRAY') {
+        push @formats, @{$ref->{formatStreams}};
+    }
+
+    return @formats;
+}
+
+sub _ytdl_is_available {
+    my ($self) = @_;
+    ($self->proxy_stdout($self->get_ytdl_cmd(), '--version') // '') =~ /\d/;
+}
+
+sub _extract_from_ytdl {
+    my ($self, $videoID) = @_;
+
+    $self->_ytdl_is_available() || return;
+
+    my @ytdl_cmd = ($self->get_ytdl_cmd(), '--all-formats', '--dump-single-json');
+
+    my $cookie_file = $self->get_cookie_file;
+
+    if (defined($cookie_file) and -f $cookie_file) {
+        push @ytdl_cmd, '--cookies', quotemeta($cookie_file);
+    }
+
+    my $json = $self->proxy_stdout(@ytdl_cmd, quotemeta("https://www.youtube.com/watch?v=" . $videoID));
+    my $ref  = $self->parse_json_string($json);
+
+    my @formats;
     if (ref($ref) eq 'HASH' and exists($ref->{formats}) and ref($ref->{formats}) eq 'ARRAY') {
         foreach my $format (@{$ref->{formats}}) {
             if (exists($format->{format_id}) and exists($format->{url})) {
 
-                push @array,
-                  {
-                    itag => $format->{format_id},
-                    url  => $format->{url},
-                    type => (
-                             (
-                              (defined($format->{format_note}) && $format->{format_note} eq 'DASH audio')
-                              ? 'audio/'
-                              : 'video/'
-                             )
-                             . $format->{ext}
-                            ),
-                  };
+                my $entry = {
+                             itag => $format->{format_id},
+                             url  => $format->{url},
+                             type => ((($format->{format} // '') =~ /audio only/i) ? 'audio/' : 'video/') . $format->{ext},
+                            };
+
+                push @formats, $entry;
             }
         }
     }
 
-    return @array;
+    return @formats;
+}
+
+sub _fallback_extract_urls {
+    my ($self, $videoID) = @_;
+
+    my @formats;
+
+    # Use youtube-dl
+    if ($self->get_ytdl and $self->_ytdl_is_available) {
+
+        if ($self->get_debug) {
+            say STDERR ":: Using youtube-dl to extract the streaming URLs...";
+        }
+
+        push @formats, $self->_extract_from_ytdl($videoID);
+
+        if ($self->get_debug) {
+            my $count = scalar(@formats);
+            say STDERR ":: youtube-dl: found $count streaming URLs...";
+        }
+
+        @formats && return @formats;
+    }
+
+    # Use the API of invidio.us
+    if ($self->get_debug) {
+        say STDERR ":: Using invidio.us to extract the streaming URLs...";
+    }
+
+    push @formats, $self->_extract_from_invidious($videoID);
+
+    if ($self->get_debug) {
+        my $count = scalar(@formats);
+        say STDERR ":: invidious: found $count streaming URLs...";
+    }
+
+    return @formats;
 }
 
 =head2 parse_query_string($string, multi => [0,1])
@@ -591,24 +794,23 @@ sub _group_keys_with_values {
     return @hashes;
 }
 
-sub _extract_streaming_urls {
-    my ($self, $info, $videoID) = @_;
+sub _check_streaming_urls {
+    my ($self, $videoID, $results) = @_;
 
-    my %stream_map = $self->parse_query_string($info->{url_encoded_fmt_stream_map}, multi => 1);
-    my %adaptive_fmts = $self->parse_query_string($info->{adaptive_fmts}, multi => 1);
+    foreach my $video (@$results) {
 
-    my @results;
+        if (   exists $video->{s}
+            or exists $video->{signatureCipher}
+            or exists $video->{cipher}) {    # has an encrypted signature :(
 
-    push @results, $self->_group_keys_with_values(%stream_map);
-    push @results, $self->_group_keys_with_values(%adaptive_fmts);
+            if ($self->get_debug) {
+                say STDERR ":: Detected an encrypted signature...";
+            }
 
-    foreach my $video (@results) {
-        if (exists $video->{s}) {    # has an encrypted signature :(
-
-            my @formats = $self->_get_formats_from_ytdl($videoID);
+            my @formats = $self->_fallback_extract_urls($videoID);
 
             foreach my $format (@formats) {
-                foreach my $ref (@results) {
+                foreach my $ref (@$results) {
                     if (defined($ref->{itag}) and ($ref->{itag} eq $format->{itag})) {
                         $ref->{url} = $format->{url};
                         last;
@@ -620,11 +822,48 @@ sub _extract_streaming_urls {
         }
     }
 
-    if (exists $info->{hlsvp}) {
-        if (my @formats = $self->_get_formats_from_ytdl($videoID)) {
+    foreach my $video (@$results) {
+        if (exists $video->{mimeType}) {
+            $video->{type} = $video->{mimeType};
+        }
+    }
+
+    return 1;
+}
+
+sub _old_extract_streaming_urls {
+    my ($self, $info, $videoID) = @_;
+
+    if ($self->get_debug) {
+        say STDERR ":: Using `url_encoded_fmt_stream_map` to extract the streaming URLs...";
+    }
+
+    my %stream_map    = $self->parse_query_string($info->{url_encoded_fmt_stream_map}, multi => 1);
+    my %adaptive_fmts = $self->parse_query_string($info->{adaptive_fmts},              multi => 1);
+
+    if ($self->get_debug >= 2) {
+        require Data::Dump;
+        Data::Dump::pp(\%stream_map);
+        Data::Dump::pp(\%adaptive_fmts);
+    }
+
+    my @results;
+
+    push @results, $self->_group_keys_with_values(%stream_map);
+    push @results, $self->_group_keys_with_values(%adaptive_fmts);
+
+    $self->_check_streaming_urls($videoID, \@results);
+
+    if ($info->{livestream} or $info->{live_playback}) {
+
+        if ($self->get_debug) {
+            say STDERR ":: Live stream detected...";
+        }
+
+        if (my @formats = $self->_fallback_extract_urls($videoID)) {
             @results = @formats;
         }
-        else {
+        elsif (exists $info->{hlsvp}) {
             push @results,
               {
                 itag => 38,
@@ -637,6 +876,77 @@ sub _extract_streaming_urls {
     return @results;
 }
 
+sub _extract_streaming_urls {
+    my ($self, $info, $videoID) = @_;
+
+    if (exists $info->{url_encoded_fmt_stream_map}) {
+        return $self->_old_extract_streaming_urls($info, $videoID);
+    }
+
+    if ($self->get_debug) {
+        say STDERR ":: Using `player_response` to extract the streaming URLs...";
+    }
+
+    my $json = $self->parse_json_string($info->{player_response} // return);
+
+    if ($self->get_debug >= 2) {
+        require Data::Dump;
+        Data::Dump::pp($json);
+    }
+
+    ref($json) eq 'HASH' or return;
+
+    my @results;
+    if (exists $json->{streamingData}) {
+
+        my $streamingData = $json->{streamingData};
+
+        if (exists $streamingData->{adaptiveFormats}) {
+            push @results, @{$streamingData->{adaptiveFormats}};
+        }
+
+        if (exists $streamingData->{formats}) {
+            push @results, @{$streamingData->{formats}};
+        }
+    }
+
+    $self->_check_streaming_urls($videoID, \@results);
+
+    # Keep only streams with contentLength > 0.
+    @results = grep { $_->{itag} == 22 or (exists($_->{contentLength}) and $_->{contentLength} > 0) } @results;
+
+    # Detect livestream
+    if (!@results and exists($json->{streamingData}) and exists($json->{streamingData}{hlsManifestUrl})) {
+
+        if ($self->get_debug) {
+            say STDERR ":: Live stream detected...";
+        }
+
+        @results = $self->_fallback_extract_urls($videoID);
+
+        if (!@results) {
+            push @results,
+              {
+                itag => 38,
+                type => "video/ts",
+                url  => $json->{streamingData}{hlsManifestUrl},
+              };
+        }
+    }
+
+    return @results;
+}
+
+sub _get_video_info {
+    my ($self, $videoID) = @_;
+
+    my $url     = $self->get_video_info_url() . sprintf($self->get_video_info_args(), $videoID);
+    my $content = $self->lwp_get($url, simple => 1) // return;
+    my %info    = $self->parse_query_string($content);
+
+    return %info;
+}
+
 =head2 get_streaming_urls($videoID)
 
 Returns a list of streaming URLs for a videoID.
@@ -647,17 +957,13 @@ Returns a list of streaming URLs for a videoID.
 sub get_streaming_urls {
     my ($self, $videoID) = @_;
 
-    my $url = ($self->get_video_info_url() . sprintf($self->get_video_info_args(), $videoID));
-    my $content = $self->lwp_get($url, simple => 1) // return;
-    my %info = $self->parse_query_string($content);
-
+    my %info           = $self->_get_video_info($videoID);
     my @streaming_urls = $self->_extract_streaming_urls(\%info, $videoID);
 
     my @caption_urls;
     if (exists $info{player_response}) {
 
-        require URI::Escape;
-        my $captions_json = URI::Escape::uri_unescape($info{player_response});
+        my $captions_json = $info{player_response};                     # don't run uri_unescape() on this
         my $caption_data  = $self->parse_json_string($captions_json);
 
         if (eval { ref($caption_data->{captions}{playerCaptionsTracklistRenderer}{captionTracks}) eq 'ARRAY' }) {
@@ -665,16 +971,72 @@ sub get_streaming_urls {
         }
     }
 
-    if ($self->get_debug == 2) {
-        require Data::Dump;
-        Data::Dump::pp(\%info);
-        Data::Dump::pp(\@streaming_urls);
-        Data::Dump::pp(\@caption_urls);
+    if ($self->get_debug) {
+        my $count = scalar(@streaming_urls);
+        say STDERR ":: Found $count streaming URLs...";
     }
 
     # Try again with youtube-dl
     if (!@streaming_urls or $info{status} =~ /fail|error/i) {
-        @streaming_urls = $self->_get_formats_from_ytdl($videoID);
+        @streaming_urls = $self->_fallback_extract_urls($videoID);
+    }
+
+    if ($self->get_prefer_mp4 or $self->get_prefer_av1) {
+
+        my @video_urls;
+        my @audio_urls;
+
+        require WWW::YoutubeViewer::Itags;
+        state $itags = WWW::YoutubeViewer::Itags::get_itags();
+
+        my %audio_itags;
+        @audio_itags{map { $_->{value} } @{$itags->{audio}}} = ();
+
+        foreach my $url (@streaming_urls) {
+
+            if (exists($audio_itags{$url->{itag}})) {
+                push @audio_urls, $url;
+                next;
+            }
+
+            if ($url->{type} =~ /\bvideo\b/i) {
+                if ($url->{type} =~ /\bav[0-9]+\b/i) {    # AV1
+                    if ($self->get_prefer_av1) {
+                        push @video_urls, $url;
+                    }
+                }
+                elsif ($self->get_prefer_mp4 and $url->{type} =~ /\bmp4\b/i) {
+                    push @video_urls, $url;
+                }
+            }
+            else {
+                push @audio_urls, $url;
+            }
+        }
+
+        if (@video_urls) {
+            @streaming_urls = (@video_urls, @audio_urls);
+        }
+    }
+
+    # Filter out streams with `clen = 0`.
+    @streaming_urls = grep { defined($_->{clen}) ? ($_->{clen} > 0) : 1 } @streaming_urls;
+
+    # Return the YouTube URL when there are no streaming URLs
+    if (!@streaming_urls) {
+        push @streaming_urls,
+          {
+            itag => 38,
+            type => "video/mp4",
+            url  => "https://www.youtube.com/watch?v=$videoID",
+          };
+    }
+
+    if ($self->get_debug >= 2) {
+        require Data::Dump;
+        Data::Dump::pp(\%info) if ($self->get_debug >= 3);
+        Data::Dump::pp(\@streaming_urls);
+        Data::Dump::pp(\@caption_urls);
     }
 
     return (\@streaming_urls, \@caption_urls, \%info);
@@ -727,26 +1089,27 @@ sub post_as_json {
     $self->_save('POST', $url, $json_str);
 }
 
-# SOUBROUTINE FACTORY
+sub from_page_token {
+    my ($self, $url, $token) = @_;
+
+    my $pt_url = (
+                  defined($token)
+                  ? (
+                     ($url =~ s/[?&]pageToken=\K[^&]+/$token/)
+                     ? $url
+                     : $self->_append_url_args($url, pageToken => $token)
+                    )
+                  : ($url =~ s/[?&]pageToken=[^&]+//r)
+                 );
+
+    my $res = $self->_get_results($pt_url);
+    $res->{url} = $pt_url;
+    return $res;
+}
+
+# SUBROUTINE FACTORY
 {
     no strict 'refs';
-
-    # Create {next,previous}_page subroutines
-    foreach my $name ('next_page', 'previous_page') {
-        *{__PACKAGE__ . '::' . $name} = sub {
-            my ($self, $url, $token) = @_;
-
-            my $pt_url = (
-                            $url =~ s/[?&]pageToken=\K[^&]+/$token/
-                          ? $url
-                          : $self->_append_url_args($url, pageToken => $token)
-                         );
-
-            my $res = $self->_get_results($pt_url);
-            $res->{url} = $pt_url;
-            return $res;
-        };
-    }
 
     # Create proxy_{exec,system} subroutines
     foreach my $name ('exec', 'system', 'stdout') {
@@ -760,6 +1123,8 @@ sub post_as_json {
 
             local $ENV{HTTP_PROXY}  = $self->{lwp}->proxy('http');
             local $ENV{HTTPS_PROXY} = $self->{lwp}->proxy('https');
+
+            local $" = " ";
 
                 $name eq 'exec'   ? exec(@args)
               : $name eq 'system' ? system(@args)

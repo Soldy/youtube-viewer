@@ -13,8 +13,7 @@ WWW::YoutubeViewer::GetCaption - Save the YouTube closed captions as .srt files 
     use WWW::YoutubeViewer::GetCaption;
 
     my $yv_cap = WWW::YoutubeViewer::GetCaption->new(%opts);
-
-    print $yv_cap->get_caption($videoID);
+    my $file = $yv_cap->save_caption($videoID);
 
 =head1 SUBROUTINES/METHODS
 
@@ -56,15 +55,22 @@ sub new {
     my ($class, %opts) = @_;
 
     my $self = bless {}, $class;
+
     $self->{captions_dir}  = undef;
     $self->{captions}      = [];
     $self->{auto_captions} = 0;
     $self->{languages}     = [qw(en es)];
+    $self->{yv_obj}        = undef;
 
     foreach my $key (keys %{$self}) {
         $self->{$key} = delete $opts{$key}
           if exists $opts{$key};
     }
+
+    $self->{yv_obj} //= do {
+        require WWW::YoutubeViewer;
+        WWW::YoutubeViewer->new(cache_dir => $self->{captions_dir},);
+    };
 
     foreach my $invalid_key (keys %opts) {
         warn "Invalid key: '${invalid_key}'";
@@ -99,7 +105,7 @@ sub find_caption_data {
 
                     # Fuzzy match or auto-generated caption
                     if (lc($caption->{languageCode}) ne lc($lang) or $auto) {
-                        $found[$i + @{$self->{languages}} + ($auto || 0) * @{$self->{languages}}] = $caption;
+                        $found[$i + (($auto ? 2 : 1) * scalar(@{$self->{languages}}))] = $caption;
                     }
 
                     # Perfect match
@@ -196,21 +202,7 @@ Get the XML content for a given caption data.
 
 sub get_xml_data {
     my ($self, $url) = @_;
-
-    require LWP::UserAgent;
-    state $lwp = LWP::UserAgent->new(
-          timeout   => 30,
-          env_proxy => 1,
-          agent => 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2272.101 Safari/537.36',
-    );
-
-    my $req = $lwp->get($url);
-
-    if ($req->is_success) {
-        return $req->decoded_content;
-    }
-
-    return;
+    $self->{yv_obj}->lwp_get($url, simple => 1);
 }
 
 =head2 save_caption($video_ID)
@@ -222,7 +214,7 @@ Save the caption in a .srt file and return its file path.
 sub save_caption {
     my ($self, $video_id) = @_;
 
-    # Find one of the prefered languages
+    # Find one of the preferred languages
     my $info = $self->find_caption_data() // return;
 
     require File::Spec;
@@ -232,9 +224,9 @@ sub save_caption {
     # Return the srt file if it already exists
     return $srt_file if (-e $srt_file);
 
-    # Get XML data, then tranform it to SubRip data
+    # Get XML data, then transform it to SubRip data
     my $xml = $self->get_xml_data($info->{baseUrl} // return) // return;
-    my $srt = $self->xml2srt($xml) // return;
+    my $srt = $self->xml2srt($xml)                            // return;
 
     # Write the SubRib data to the $srt_file
     open(my $fh, '>:utf8', $srt_file) or return;

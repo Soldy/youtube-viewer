@@ -48,20 +48,25 @@ Return video categories for a specific region ID.
 sub video_categories {
     my ($self) = @_;
 
+    if (not defined $self->get_key) {
+        warn "[!] No API key has been set...\n";
+        return {};
+    }
+
     require File::Spec;
 
     my $region = $self->get_regionCode() // 'US';
-    my $url = $self->_make_videoCategories_url(regionCode => $region);
-    my $file = File::Spec->catfile($self->get_config_dir, "categories-$region-" . $self->get_hl() . ".json");
+    my $url    = $self->_make_videoCategories_url(regionCode => $region);
+    my $file   = File::Spec->catfile($self->get_config_dir, "categories-$region-" . $self->get_hl() . ".json");
 
     my $json;
-    if (open(my $fh, '<:utf8', $file)) {
+    if (-f $file and not -z _ and open(my $fh, '<:utf8', $file)) {
         local $/;
         $json = <$fh>;
         close $fh;
     }
     else {
-        $json = $self->lwp_get($url, simple => 1);
+        $json = $self->lwp_get($url, simple => 1) // return {};
         open my $fh, '>:utf8', $file;
         print {$fh} $json;
         close $fh;

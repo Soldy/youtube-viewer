@@ -48,7 +48,7 @@ sub _make_videos_url {
     }
 }
 
-=head2 videos_from_category($catID)
+=head2 videos_from_category($category_id)
 
 Get videos from a category ID.
 
@@ -56,12 +56,61 @@ Get videos from a category ID.
 
 sub videos_from_category {
     my ($self, $cat_id) = @_;
-    $self->_get_results(
-                        $self->_make_videos_url(
-                                                chart           => $self->get_chart,
-                                                videoCategoryId => $cat_id,
-                                               )
-                       );
+
+    my $videos = $self->_get_results(
+                                     $self->_make_videos_url(
+                                                             chart           => 'mostPopular',
+                                                             videoCategoryId => $cat_id,
+                                                            )
+                                    );
+
+    state $yv_utils = WWW::YoutubeViewer::Utils->new;
+
+    if (not $yv_utils->has_entries($videos)) {
+        $videos = $self->trending_videos_from_category($cat_id);
+    }
+
+    return $videos;
+}
+
+=head2 trending_videos_from_category($category_id)
+
+Get popular videos from a category ID.
+
+=cut
+
+sub trending_videos_from_category {
+    my ($self, $cat_id) = @_;
+
+    my $results = do {
+        local $self->{publishedAfter} = do {
+            state $yv_utils = WWW::YoutubeViewer::Utils->new;
+            $yv_utils->period_to_date(1, 'w');
+        } if !defined($self->get_publishedAfter);
+        local $self->{videoCategoryId} = $cat_id;
+        local $self->{regionCode}      = "US" if !defined($self->get_regionCode);
+        $self->search_videos(undef);
+    };
+
+    return $results;
+}
+
+=head2 popular_videos($channel_id)
+
+Get the most popular videos for a given channel ID.
+
+=cut
+
+sub popular_videos {
+    my ($self, $id) = @_;
+
+    my $results = do {
+        local $self->{channelId} = $id;
+        local $self->{order}     = 'viewCount';
+        $self->search_videos("");
+    };
+
+    return $results;
 }
 
 =head2 my_likes()
@@ -72,6 +121,7 @@ Get the videos liked by the authenticated user.
 
 sub my_likes {
     my ($self) = @_;
+    $self->get_access_token() // return;
     $self->_get_results($self->_make_videos_url(myRating => 'like', pageToken => $self->page_token));
 }
 
@@ -83,6 +133,7 @@ Get the videos disliked by the authenticated user.
 
 sub my_dislikes {
     my ($self) = @_;
+    $self->get_access_token() // return;
     $self->_get_results($self->_make_videos_url(myRating => 'dislike', pageToken => $self->page_token));
 }
 
@@ -97,7 +148,7 @@ sub send_rating_to_video {
 
     if ($rating eq 'none' or $rating eq 'like' or $rating eq 'dislike') {
         my $url = $self->_simple_feeds_url('videos/rate', id => $video_id, rating => $rating);
-        return defined($self->lwp_post($url, $self->_get_lwp_header()));
+        return defined($self->lwp_post($url, $self->_auth_lwp_header()));
     }
 
     return;
@@ -144,8 +195,82 @@ When C<$part> is C<undef>, it defaults to I<snippet>.
 =cut
 
 sub video_details {
-    my ($self, $id, $part) = @_;
-    return $self->_get_results($self->_make_videos_url(id => $id, part => $part // 'snippet'));
+    my ($self, $ids, $part) = @_;
+
+    my $info = $self->_get_results($self->_make_videos_url(id => $ids, part => $part // 'snippet'));
+
+    state $yv_utils = WWW::YoutubeViewer::Utils->new;
+
+    if ($yv_utils->has_entries($info)) {
+        return $info;
+    }
+
+    if ($self->get_debug) {
+        say STDERR ":: Extracting video info using the fallback method...";
+    }
+
+    my @items;
+
+    foreach my $id (split(/,/, $ids)) {
+
+        # Fallback using the `get_video_info` URL
+        my %video_info = $self->_get_video_info($id);
+        my $video      = $self->parse_json_string($video_info{player_response} // next);
+
+        if (exists $video->{videoDetails}) {
+            $video = $video->{videoDetails};
+        }
+        else {
+            next;
+        }
+
+        my $length   = $video->{lengthSeconds};
+        my $duration = sprintf("PT%dH%dM%dS", int($length / 3600), int($length / 60) % 60, $length % 60);
+
+        my %details = (
+
+            contentDetails => {
+                               definition => "hd",
+                               dimension  => "2d",
+                               duration   => $duration,
+                               projection => "rectangular",
+                              },
+
+            id   => $id,
+            kind => "youtube#video",
+
+            snippet => {
+                channelId    => $video->{channelId},
+                channelTitle => $video->{author},
+                description  => $video->{shortDescription},
+                title        => $video->{title},
+                tags         => $video->{keywords},
+
+                liveBroadcastContent => ($video->{isLiveContent} ? 'live' : 'no'),
+
+                thumbnails => [default  => $video->{thumbnail}{thumbnails}[0],
+                               medium   => $video->{thumbnail}{thumbnails}[1],
+                               standard => $video->{thumbnail}{thumbnails}[2],
+                               high     => $video->{thumbnail}{thumbnails}[3],
+                               maxres   => $video->{thumbnail}{thumbnails}[4],
+                              ],
+                       },
+
+            statistics => {
+                           viewCount => $video->{viewCount},
+                          },
+                      );
+
+        push @items, \%details;
+    }
+
+    my %results = (
+                   items    => \@items,
+                   kind     => "youtube#videoListResponse",
+                   pageInfo => {resultsPerPage => scalar(@items), totalResults => scalar(@items)},
+                  );
+
+    return scalar {results => \%results};
 }
 
 =head2 Return details

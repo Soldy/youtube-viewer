@@ -4,7 +4,7 @@
       "Trizen <echo dHJpemVuQHByb3Rvbm1haWwuY29tCg== | base64 -d>"
    ],
    "dynamic_config" : 1,
-   "generated_by" : "Module::Build version 0.4224",
+   "generated_by" : "Module::Build version 0.4231",
    "license" : [
       "perl_5"
    ],
@@ -29,7 +29,7 @@
             "JSON::XS" : "0",
             "LWP::UserAgent::Cached" : "0",
             "Mozilla::CA" : "0",
-            "Term::ReadLine::Gnu::XS" : "0"
+            "Term::ReadLine::Gnu" : "0"
          },
          "requires" : {
             "Data::Dump" : "0",
@@ -44,6 +44,7 @@
             "LWP::UserAgent" : "0",
             "List::Util" : "0",
             "MIME::Base64" : "0",
+            "Memoize" : "0",
             "Term::ANSIColor" : "0",
             "Term::ReadLine" : "0",
             "Text::ParseWords" : "0",
@@ -56,7 +57,7 @@
    "provides" : {
       "WWW::YoutubeViewer" : {
          "file" : "lib/WWW/YoutubeViewer.pm",
-         "version" : "v3.3.3"
+         "version" : "v3.7.9"
       },
       "WWW::YoutubeViewer::Activities" : {
          "file" : "lib/WWW/YoutubeViewer/Activities.pm"
@@ -116,6 +117,6 @@
          "http://dev.perl.org/licenses/"
       ]
    },
-   "version" : "v3.3.3",
-   "x_serialization_backend" : "JSON::PP version 2.97001"
+   "version" : "v3.7.9",
+   "x_serialization_backend" : "JSON::PP version 4.05"
 }

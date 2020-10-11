@@ -73,8 +73,8 @@ For all functions, C<$channels->{results}{items}> contains:
                         },
       ) {
         *{__PACKAGE__ . '::' . $method->{name}} = sub {
-            my ($self, $id) = @_;
-            return $self->_get_results($self->_make_channels_url($method->{key} => $id));
+            my ($self, $channel_id) = @_;
+            return $self->_get_results($self->_make_channels_url($method->{key} => $channel_id));
         };
     }
 
@@ -94,7 +94,28 @@ Returns info about the channel of the current authenticated user.
 
 sub my_channel {
     my ($self) = @_;
+    $self->get_access_token() // return;
     return $self->_get_results($self->_make_channels_url(part => 'snippet', mine => 'true'));
+}
+
+=head2 my_channel_id()
+
+Returns the channel ID of the current authenticated user.
+
+=cut
+
+sub my_channel_id {
+    my ($self) = @_;
+
+    state $cache = {};
+
+    if (exists $cache->{id}) {
+        return $cache->{id};
+    }
+
+    $cache->{id} = undef;
+    my $channel = $self->my_channel() // return;
+    $cache->{id} = $channel->{results}{items}[0]{id} // return;
 }
 
 =head2 channels_my_subscribers()
@@ -117,8 +138,16 @@ Return the channel ID for an username.
 
 sub channel_id_from_username {
     my ($self, $username) = @_;
+
+    state $username_lookup = {};
+
+    if (exists $username_lookup->{$username}) {
+        return $username_lookup->{$username};
+    }
+
+    $username_lookup->{$username} = undef;
     my $channel = $self->channels_from_username($username) // return;
-    $channel->{results}{items}[0]{id} // return;
+    $username_lookup->{$username} = $channel->{results}{items}[0]{id} // return;
 }
 
 =head2 channel_title_from_id($channel_id)
@@ -129,6 +158,11 @@ Return the channel title for a given channel ID.
 
 sub channel_title_from_id {
     my ($self, $channel_id) = @_;
+
+    if ($channel_id eq 'mine') {
+        $channel_id = $self->my_channel_id();
+    }
+
     my $info = $self->channels_info($channel_id // return) // return;
 
     (    ref($info) eq 'HASH'

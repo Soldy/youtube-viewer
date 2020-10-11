@@ -80,10 +80,11 @@ From a string like 'video/webm;+codecs="vp9"', it returns 'webm'.
 sub extension {
     my ($self, $type) = @_;
         $type =~ /\bflv\b/i      ? q{flv}
-      : $type =~ /\bwebm\b/i     ? q{webm}
+      : $type =~ /\bopus\b/i     ? q{opus}
       : $type =~ /\b3gpp?\b/i    ? q{3gp}
       : $type =~ m{^video/(\w+)} ? $1
       : $type =~ m{^audio/(\w+)} ? $1
+      : $type =~ /\bwebm\b/i     ? q{webm}
       :                            q{mp4};
 }
 
@@ -132,6 +133,8 @@ Return string "04 May 2010" from "2010-05-04T00:25:55.000Z"
 sub format_date {
     my ($self, $date) = @_;
 
+    $date // return undef;
+
     # 2010-05-04T00:25:55.000Z
     # to: 04 May 2010
 
@@ -148,15 +151,91 @@ sub format_date {
     return $date;
 }
 
-=head2 has_entries($request)
+=head2 date_to_age($date)
 
-Returns true if a given request has entries.
+Return the (approximated) age for a given date of the form "2010-05-04T00:25:55.000Z".
+
+=cut
+
+sub date_to_age {
+    my ($self, $date) = @_;
+
+    $date // return undef;
+
+    $date =~ m{^
+        (?<year>\d{4})
+           -
+        (?<month>\d{2})
+           -
+        (?<day>\d{2})
+        [a-zA-Z]
+        (?<hour>\d{2})
+            :
+        (?<min>\d{2})
+            :
+        (?<sec>\d{2})
+    }x || return undef;
+
+    my ($sec, $min, $hour, $day, $month, $year) = gmtime(time);
+
+    $year  += 1900;
+    $month += 1;
+
+    my $lambda = sub {
+
+        if ($year == $+{year}) {
+            if ($month == $+{month}) {
+                if ($day == $+{day}) {
+                    if ($hour == $+{hour}) {
+                        if ($min == $+{min}) {
+                            return join(' ', $sec - $+{sec}, 'seconds');
+                        }
+                        return join(' ', $min - $+{min}, 'minutes');
+                    }
+                    return join(' ', $hour - $+{hour}, 'hours');
+                }
+                return join(' ', $day - $+{day}, 'days');
+            }
+            return join(' ', $month - $+{month}, 'months');
+        }
+
+        if ($year - $+{year} == 1) {
+            my $month_diff = $+{month} - $month;
+            if ($month_diff > 0) {
+                return join(' ', 12 - $month_diff, 'months');
+            }
+        }
+
+        return join(' ', $year - $+{year}, 'years');
+    };
+
+    my $age = $lambda->();
+
+    if ($age =~ /^1\s/) {    # singular mode
+        $age =~ s/s\z//;
+    }
+
+    return $age;
+}
+
+=head2 has_entries($result)
+
+Returns true if a given result has entries.
 
 =cut
 
 sub has_entries {
-    my ($self, $req) = @_;
-    !!$req->{results}{pageInfo}{totalResults};
+    my ($self, $result) = @_;
+
+    ref($result) eq 'HASH' or return;
+
+    if (exists $result->{results}) {
+        $result = $result->{results};
+    }
+
+    ref($result) eq 'HASH' or return;
+
+    ($result->{pageInfo}{totalResults} // 0) > 0;
 }
 
 =head2 normalize_video_title($title, $fat32safe)
@@ -169,7 +248,8 @@ sub normalize_video_title {
     my ($self, $title, $fat32safe) = @_;
 
     if ($fat32safe) {
-        $title =~ tr{:"*/?\\|}{;'+%$%%};    # "
+        $title =~ s/: / - /g;
+        $title =~ tr{:"*/?\\|}{;'+%!%%};    # "
         $title =~ tr/<>//d;
     }
     else {
@@ -211,38 +291,60 @@ sub format_text {
         DEFINITION  => sub { $self->get_definition($info) },
         DIMENSION   => sub { $self->get_dimension($info) },
         VIEWS       => sub { $self->get_views($info) },
+        VIEWS_SHORT => sub { $self->get_views_approx($info) },
         LIKES       => sub { $self->get_likes($info) },
         DISLIKES    => sub { $self->get_dislikes($info) },
         COMMENTS    => sub { $self->get_comments($info) },
         DURATION    => sub { $self->get_duration($info) },
-        TIME        => sub { $self->format_time($self->get_duration($info)) },
+        TIME        => sub { $self->get_time($info) },
         TITLE       => sub { $self->get_title($info) },
         FTITLE      => sub { $self->normalize_video_title($self->get_title($info), $fat32safe) },
         CAPTION     => sub { $self->get_caption($info) },
+        PUBLISHED   => sub { $self->get_publication_date($info) },
+        AGE         => sub { $self->get_publication_age($info) },
+        AGE_SHORT   => sub { $self->get_publication_age_approx($info) },
         DESCRIPTION => sub { $self->get_description($info) },
 
-        RESOLUTION => sub {
-            $streaming->{resolution} =~ /^\d+\z/
-              ? $streaming->{resolution} . 'p'
-              : $streaming->{resolution};
+        RATING => sub {
+            my $likes    = $self->get_likes($info)    // 0;
+            my $dislikes = $self->get_dislikes($info) // 0;
+
+            my $rating = 0;
+            if ($likes + $dislikes > 0) {
+                $rating = $likes / ($likes + $dislikes) * 5;
+            }
+
+            sprintf('%.2f', $rating);
         },
 
-        ITAG   => sub { $streaming->{streaming}{itag} },
-        SUB    => sub { $streaming->{srt_file} },
-        VIDEO  => sub { $streaming->{streaming}{url} },
-        FORMAT => sub { $self->extension($streaming->{streaming}{type}) },
+        (
+         defined($streaming)
+         ? (
+            RESOLUTION => sub {
+                $streaming->{resolution} =~ /^\d+\z/
+                  ? $streaming->{resolution} . 'p'
+                  : $streaming->{resolution};
+            },
 
-        AUDIO => sub {
-            ref($streaming->{streaming}{__AUDIO__}) eq 'HASH'
-              ? $streaming->{streaming}{__AUDIO__}{url}
-              : q{};
-        },
+            ITAG   => sub { $streaming->{streaming}{itag} },
+            SUB    => sub { $streaming->{srt_file} },
+            VIDEO  => sub { $streaming->{streaming}{url} },
+            FORMAT => sub { $self->extension($streaming->{streaming}{type}) },
 
-        AOV => sub {
-            ref($streaming->{streaming}{__AUDIO__}) eq 'HASH'
-              ? $streaming->{streaming}{__AUDIO__}{url}
-              : $streaming->{streaming}{url};
-        },
+            AUDIO => sub {
+                ref($streaming->{streaming}{__AUDIO__}) eq 'HASH'
+                  ? $streaming->{streaming}{__AUDIO__}{url}
+                  : q{};
+            },
+
+            AOV => sub {
+                ref($streaming->{streaming}{__AUDIO__}) eq 'HASH'
+                  ? $streaming->{streaming}{__AUDIO__}{url}
+                  : $streaming->{streaming}{url};
+            },
+           )
+         : ()
+        ),
 
         URL => sub { sprintf($self->{youtube_url_format}, $self->get_video_id($info)) },
                          );
@@ -310,7 +412,18 @@ sub get_video_id {
     ref($info->{id}) eq 'HASH'                        ? $info->{id}{videoId}
       : exists($info->{snippet}{resourceId}{videoId}) ? $info->{snippet}{resourceId}{videoId}
       : exists($info->{contentDetails}{videoId})      ? $info->{contentDetails}{videoId}
-      :                                                 $info->{id};
+      : exists($info->{contentDetails}{playlistItem}{resourceId}{videoId})
+      ? $info->{contentDetails}{playlistItem}{resourceId}{videoId}
+      : exists($info->{contentDetails}{upload}{videoId}) ? $info->{contentDetails}{upload}{videoId}
+      : do {
+        my $id = $info->{id} // return undef;
+
+        if (length($id) != 11) {
+            return undef;
+        }
+
+        $id;
+      };
 }
 
 sub get_playlist_id {
@@ -370,14 +483,82 @@ sub get_channel_id {
     $info->{snippet}{resourceId}{channelId} // $info->{snippet}{channelId};
 }
 
+sub get_category_id {
+    my ($self, $info) = @_;
+    $info->{snippet}{resourceId}{categoryId} // $info->{snippet}{categoryId};
+}
+
+sub get_category_name {
+    my ($self, $info) = @_;
+
+    state $categories = {
+                         1  => 'Film & Animation',
+                         2  => 'Autos & Vehicles',
+                         10 => 'Music',
+                         15 => 'Pets & Animals',
+                         17 => 'Sports',
+                         19 => 'Travel & Events',
+                         20 => 'Gaming',
+                         22 => 'People & Blogs',
+                         23 => 'Comedy',
+                         24 => 'Entertainment',
+                         25 => 'News & Politics',
+                         26 => 'Howto & Style',
+                         27 => 'Education',
+                         28 => 'Science & Technology',
+                         29 => 'Nonprofits & Activism',
+                        };
+
+    $categories->{$self->get_category_id($info) // ''} // 'Unknown';
+}
+
 sub get_publication_date {
     my ($self, $info) = @_;
     $self->format_date($info->{snippet}{publishedAt});
 }
 
+sub get_publication_age {
+    my ($self, $info) = @_;
+    $self->date_to_age($info->{snippet}{publishedAt});
+}
+
+sub get_publication_age_approx {
+    my ($self, $info) = @_;
+
+    my $age = $self->date_to_age($info->{snippet}{publishedAt}) // return undef;
+
+    if ($age =~ /hour|min|sec/) {
+        return "0d";
+    }
+
+    if ($age =~ /^(\d+) day/) {
+        return "$1d";
+    }
+
+    if ($age =~ /^(\d+) month/) {
+        return "$1m";
+    }
+
+    if ($age =~ /^(\d+) year/) {
+        return "$1y";
+    }
+
+    return $age;
+}
+
 sub get_duration {
     my ($self, $info) = @_;
     $self->format_duration($info->{contentDetails}{duration});
+}
+
+sub get_time {
+    my ($self, $info) = @_;
+
+    if ($info->{snippet}{liveBroadcastContent} eq 'live') {
+        return 'LIVE';
+    }
+
+    $self->format_time($self->get_duration($info));
 }
 
 sub get_definition {
@@ -397,7 +578,42 @@ sub get_caption {
 
 sub get_views {
     my ($self, $info) = @_;
-    $info->{statistics}{viewCount};
+    $info->{statistics}{viewCount} // 0;
+}
+
+sub get_views_approx {
+    my ($self, $info) = @_;
+    my $views = $info->{statistics}{viewCount} // 0;
+
+    if ($views < 1000) {
+        return $views;
+    }
+
+    if ($views >= 10 * 1e9) {    # ten billions
+        return sprintf("%dB", int($views / 1e9));
+    }
+
+    if ($views >= 1e9) {         # billions
+        return sprintf("%.2gB", $views / 1e9);
+    }
+
+    if ($views >= 10 * 1e6) {    # ten millions
+        return sprintf("%dM", int($views / 1e6));
+    }
+
+    if ($views >= 1e6) {         # millions
+        return sprintf("%.2gM", $views / 1e6);
+    }
+
+    if ($views >= 10 * 1e3) {    # ten thousands
+        return sprintf("%dK", int($views / 1e3));
+    }
+
+    if ($views >= 1e3) {         # thousands
+        return sprintf("%.2gK", $views / 1e3);
+    }
+
+    return $views;
 }
 
 sub get_likes {
@@ -417,10 +633,12 @@ sub get_comments {
 
 {
     no strict 'refs';
-    foreach my $pair ([playlist => {'youtube#playlist' => 1}],
+    foreach my $pair (
+                      [playlist     => {'youtube#playlist'     => 1}],
                       [channel      => {'youtube#channel'      => 1}],
                       [video        => {'youtube#video'        => 1, 'youtube#playlistItem' => 1}],
                       [subscription => {'youtube#subscription' => 1}],
+                      [activity     => {'youtube#activity'     => 1}],
       ) {
 
         *{__PACKAGE__ . '::' . 'is_' . $pair->[0]} = sub {
@@ -443,15 +661,29 @@ sub get_comments {
     }
 }
 
+sub is_channelID {
+    my ($self, $id) = @_;
+    $id || return;
+    $id eq 'mine' or $id =~ /^UC[-a-zA-Z0-9_]{22}\z/;
+}
+
+sub is_videoID {
+    my ($self, $id) = @_;
+    $id || return;
+    $id =~ /^[-a-zA-Z0-9_]{11}\z/;
+}
+
 sub period_to_date {
     my ($self, $amount, $period) = @_;
 
     state $day   = 60 * 60 * 24;
+    state $week  = $day * 7;
     state $month = $day * 30.4368;
     state $year  = $day * 365.242;
 
     my $time = $amount * (
                             $period =~ /^d/i ? $day
+                          : $period =~ /^w/i ? $week
                           : $period =~ /^m/i ? $month
                           : $period =~ /^y/i ? $year
                           : 0
@@ -477,7 +709,7 @@ You can find documentation for this module with the perldoc command.
 
 =head1 LICENSE AND COPYRIGHT
 
-Copyright 2012-2015 Trizen.
+Copyright 2012-2020 Trizen.
 
 This program is free software; you can redistribute it and/or modify it
 under the terms of either: the GNU General Public License as published
