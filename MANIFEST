@@ -35,8 +35,9 @@ share/icons/default_thumb.jpg
 share/icons/feed.png
 share/icons/feed_gray.png
 share/icons/gtk-youtube-viewer.png
-share/icons/spinner.gif
 share/icons/user.png
 t/00-load.t
 t/kwalitee.t
 t/pod.t
+utils/auto_perltidy.sh
+utils/bak_cleaner.sh

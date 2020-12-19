@@ -31,7 +31,7 @@ WWW::YoutubeViewer - A very easy interface to YouTube.
 
 =cut
 
-our $VERSION = '3.7.9';
+our $VERSION = '3.8.0';
 
 =head1 SYNOPSIS
 
@@ -60,21 +60,21 @@ my %valid_options = (
     channelType     => {valid => [qw(any show)],                                         default => undef},
 
     # Video only options
-    videoCaption    => {valid => [qw(any closedCaption none)],     default => undef},
-    videoDefinition => {valid => [qw(any high standard)],          default => undef},
-    videoCategoryId => {valid => qr/^\d+\z/,                       default => undef},
-    videoDimension  => {valid => [qw(any 2d 3d)],                  default => undef},
-    videoDuration   => {valid => [qw(any short medium long)],      default => undef},
-    videoEmbeddable => {valid => [qw(any true)],                   default => undef},
-    videoLicense    => {valid => [qw(any creativeCommon youtube)], default => undef},
-    videoSyndicated => {valid => [qw(any true)],                   default => undef},
-    eventType       => {valid => [qw(completed live upcoming)],    default => undef},
-    chart           => {valid => [qw(mostPopular)],                default => undef},
+    videoCaption    => {valid => [qw(closedCaption none)],      default => undef},
+    videoDefinition => {valid => [qw(high standard)],           default => undef},
+    videoCategoryId => {valid => qr/^\d+\z/,                    default => undef},
+    videoDimension  => {valid => [qw(2d 3d)],                   default => undef},
+    videoDuration   => {valid => [qw(short medium long)],       default => undef},
+    videoEmbeddable => {valid => [qw(true)],                    default => undef},
+    videoLicense    => {valid => [qw(creativeCommon youtube)],  default => undef},
+    videoSyndicated => {valid => [qw(true)],                    default => undef},
+    eventType       => {valid => [qw(completed live upcoming)], default => undef},
+    chart           => {valid => [qw(mostPopular)],             default => undef},
 
     regionCode        => {valid => qr/^[A-Z]{2}\z/i,           default => undef},
     relevanceLanguage => {valid => qr/^[a-z]+(?:\-\w+)?\z/i,   default => undef},
     safeSearch        => {valid => [qw(none moderate strict)], default => undef},
-    videoType         => {valid => [qw(any episode movie)],    default => undef},
+    videoType         => {valid => [qw(episode movie)],        default => undef},
 
     comments_order      => {valid => [qw(time relevance)],                default => 'time'},
     subscriptions_order => {valid => [qw(alphabetical relevance unread)], default => undef},
@@ -266,8 +266,8 @@ sub set_lwp_useragent {
                $code >= 300                                # do not cache any bad response
                  or $response->request->method ne 'GET'    # cache only GET requests
 
-                 # don't cache if "cache-control" specifies "max-age=0" or "no-store"
-                 or (($response->header('cache-control') // '') =~ /\b(?:max-age=0|no-store)\b/)
+                 # don't cache if "cache-control" specifies "max-age=0", "no-store" or "no-cache"
+                 or (($response->header('cache-control') // '') =~ /\b(?:max-age=0|no-store|no-cache)\b/)
 
                  # don't cache video or audio files
                  or (($response->header('content-type') // '') =~ /\b(?:video|audio)\b/);
@@ -569,7 +569,7 @@ sub get_invidious_instances {
 }
 
 sub select_good_invidious_instances {
-    my ($self) = @_;
+    my ($self, %args) = @_;
 
     state $instances = $self->get_invidious_instances;
 
@@ -577,18 +577,25 @@ sub select_good_invidious_instances {
 
     my %ignored = (
                    'yewtu.be'                 => 1,
-                   'invidiou.site'            => 1,
+                   'invidious.tube'           => 1,
+                   'invidiou.site'            => 0,
                    'invidious.xyz'            => 1,
                    'vid.mint.lgbt'            => 1,
                    'invidious.ggc-project.de' => 1,
                    'invidious.toot.koeln'     => 1,
-                   'invidious.snopyta.org'    => 1,    # too popular == too slow
+                   'invidious.kavin.rocks'    => 0,
+                   'invidious.snopyta.org'    => 1,
                   );
 
+#<<<
     my @candidates =
       grep { not $ignored{$_->[0]} }
-      grep { ref($_->[1]{monitor}) eq 'HASH' ? ($_->[1]{monitor}{statusClass} eq 'success') : 1 }
+      grep { $args{lax} ? 1 : eval { lc($_->[1]{monitor}{dailyRatios}[0]{label} // '') eq 'success' } }
+      #~ grep { $args{lax} ? 1 : eval { lc($_->[1]{monitor}{weeklyRatio}{label} // '') eq 'success' } }
+      grep { $args{lax} ? 1 : eval { lc($_->[1]{monitor}{statusClass} // '') eq 'success' } }
+      #~ grep { $args{lax} ? 1 : !exists($_->[1]{stats}{error}) }
       grep { lc($_->[1]{type} // '') eq 'https' } @$instances;
+#>>>
 
     if ($self->get_debug) {
 
@@ -604,11 +611,20 @@ sub select_good_invidious_instances {
 sub _extract_from_invidious {
     my ($self, $videoID) = @_;
 
-    my @instances = $self->select_good_invidious_instances();
+    my @candidates       = $self->select_good_invidious_instances();
+    my @extra_candidates = $self->select_good_invidious_instances(lax => 1);
+
+    require List::Util;
+
+#<<<
+    my %seen;
+    my @instances = grep { !$seen{$_}++ } (
+        List::Util::shuffle(map { $_->[0] } @candidates),
+        List::Util::shuffle(map { $_->[0] } @extra_candidates),
+    );
+#>>>
 
     if (@instances) {
-        require List::Util;
-        @instances = List::Util::shuffle(map { $_->[0] } @instances);
         push @instances, 'invidious.snopyta.org';
     }
     else {
@@ -901,6 +917,11 @@ sub _extract_streaming_urls {
 
         my $streamingData = $json->{streamingData};
 
+        if (defined $streamingData->{dashManifestUrl}) {
+            say STDERR ":: Contains DASH manifest URL" if $self->get_debug;
+            ##return;
+        }
+
         if (exists $streamingData->{adaptiveFormats}) {
             push @results, @{$streamingData->{adaptiveFormats}};
         }
@@ -914,6 +935,9 @@ sub _extract_streaming_urls {
 
     # Keep only streams with contentLength > 0.
     @results = grep { $_->{itag} == 22 or (exists($_->{contentLength}) and $_->{contentLength} > 0) } @results;
+
+    # Filter out streams with "dur=0.000"
+    @results = grep { $_->{url} !~ /\bdur=0\.000\b/ } @results;
 
     # Detect livestream
     if (!@results and exists($json->{streamingData}) and exists($json->{streamingData}{hlsManifestUrl})) {
@@ -1091,6 +1115,10 @@ sub post_as_json {
 
 sub from_page_token {
     my ($self, $url, $token) = @_;
+
+    if (ref($token) eq 'CODE') {
+        return $token->();
+    }
 
     my $pt_url = (
                   defined($token)

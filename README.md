@@ -6,13 +6,13 @@ A lightweight application for searching and playing videos from YouTube.
 
 * command-line interface to YouTube.
 
-![youtube-viewer](https://user-images.githubusercontent.com/614513/73046877-5cae1200-3e7c-11ea-8ab3-f8c444f88b30.png)
+![youtube-viewer](https://user-images.githubusercontent.com/614513/97738550-6d0faf00-1ad6-11eb-84ec-d37f28073d9d.png)
 
 ### gtk-youtube-viewer
 
 * GTK+ interface to YouTube.
 
-![gtk-youtube-viewer](https://user-images.githubusercontent.com/614513/73087694-93ffdb80-3edb-11ea-8fea-05901d72f68d.png)
+![gtk-youtube-viewer](https://user-images.githubusercontent.com/614513/73046878-5cae1200-3e7c-11ea-87ac-9d769831026e.png)
 
 ### AVAILABILITY
 
@@ -125,6 +125,10 @@ See also: [#285](https://github.com/trizen/youtube-viewer/issues/285), [#308](ht
 ### STRAW-VIEWER
 
 [straw-viewer](https://github.com/trizen/straw-viewer) is a fork of `youtube-viewer`, which uses the [API](https://github.com/omarroth/invidious/wiki/API) of [invidio.us](https://invidio.us/), and thus it does not require an YouTube API key.
+
+### PIPE-VIEWER
+
+[pipe-viewer](https://github.com/trizen/pipe-viewer) is an experimental fork of `straw-viewer`, which parses the YouTube website directly.
 
 ### REVIEWS
 

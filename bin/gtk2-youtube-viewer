@@ -15,7 +15,7 @@
 #-------------------------------------------------------
 #  GTK YouTube Viewer
 #  Created on: 12 September 2010
-#  Latest edit on: 10 October 2020
+#  Latest edit on: 08 December 2020
 #  https://github.com/trizen/youtube-viewer
 #-------------------------------------------------------
 
@@ -28,7 +28,7 @@ no warnings 'once';
 my $DEVEL;                                 # true in devel mode
 use if ($DEVEL = 0), lib => qw(../lib);    # devel only
 
-use WWW::YoutubeViewer v3.7.9;
+use WWW::YoutubeViewer v3.8.0;
 use WWW::YoutubeViewer::RegularExpressions;
 
 use Gtk2 qw(-init);
@@ -150,21 +150,15 @@ my %CONFIG = (
                               srt   => q{--sub-file=*SUB*},
                               audio => q{--input-slave=*AUDIO*},
                               fs    => q{--fullscreen},
-                              arg   => q{--quiet --play-and-exit --no-video-title-show --input-title-format=*TITLE*},
+                              arg   => q{--quiet --play-and-exit --no-video-title-show --input-title-format=*TITLE* *VIDEO*},
                              },
                       mpv => {
                               cmd   => q{mpv},
                               srt   => q{--sub-file=*SUB*},
                               audio => q{--audio-file=*AUDIO*},
                               fs    => q{--fullscreen},
-                              arg   => q{--really-quiet --title=*TITLE* --no-ytdl},
+                              arg   => q{--really-quiet --force-media-title=*TITLE* --no-ytdl *VIDEO*},
                              },
-                      smplayer => {
-                                   cmd => q{smplayer},
-                                   srt => q{-sub *SUB*},
-                                   fs  => q{-fullscreen},
-                                   arg => q{-close-at-end -media-title *TITLE* *URL*},
-                                  },
                      },
     video_player_selected => undef,    # autodetect it later
 
@@ -224,6 +218,8 @@ my %CONFIG = (
     debug       => 0,
     fullscreen  => 0,
     audio_only  => 0,
+
+    autoscroll_to_end => 0,
 
     # youtube-dl support
     ytdl     => 1,
@@ -351,7 +347,6 @@ my %objects = (
     'clear_list_checkbutton' => \my $clear_list_checkbutton,
     'dash_checkbutton'       => \my $dash_checkbutton,
     'audio_only_checkbutton' => \my $audio_only_checkbutton,
-    'gif_spinner'            => \my $gif_spinner,
     'hbox2'                  => \my $hbox2,
     'feeds_title'            => \my $feeds_title,
     'channel_name_save'      => \my $save_channel_name_entry,
@@ -419,11 +414,10 @@ local $SIG{__DIE__} = sub {
 
 #---------------------- LOAD IMAGES ----------------------#
 my $app_icon_pixbuf       = 'Gtk2::Gdk::Pixbuf'->new_from_file(catfile($icons_path, "gtk-youtube-viewer.png"));
-my $user_icon_pixbuf      = 'Gtk2::Gdk::Pixbuf'->new_from_file_at_size(catfile($icons_path, "user.png"), 16, 16);
-my $feed_icon_pixbuf      = 'Gtk2::Gdk::Pixbuf'->new_from_file_at_size(catfile($icons_path, "feed.png"), 16, 16);
-my $feed_icon_gray_pixbuf = 'Gtk2::Gdk::Pixbuf'->new_from_file_at_size(catfile($icons_path, "feed_gray.png"), 16, 16);
+my $user_icon_pixbuf      = 'Gtk2::Gdk::Pixbuf'->new_from_file_at_size(catfile($icons_path, "user.png"),          16,  16);
+my $feed_icon_pixbuf      = 'Gtk2::Gdk::Pixbuf'->new_from_file_at_size(catfile($icons_path, "feed.png"),          16,  16);
+my $feed_icon_gray_pixbuf = 'Gtk2::Gdk::Pixbuf'->new_from_file_at_size(catfile($icons_path, "feed_gray.png"),     16,  16);
 my $default_thumb         = 'Gtk2::Gdk::Pixbuf'->new_from_file_at_size(catfile($icons_path, "default_thumb.jpg"), 160, 90);
-my $animation             = 'Gtk2::Gdk::PixbufAnimation'->new_from_file(catfile($icons_path, "spinner.gif"));
 
 # Setting application title and icon
 $mainw->set_title("$appname $version");
@@ -963,7 +957,15 @@ sub new_image_from_pixbuf {
 # Treeview signals
 {
     $treeview->signal_connect('button_press_event', \&menu_popup);
+    $treeview->signal_connect('size-allocate',      \&treeview_scroll_to_end) if $CONFIG{autoscroll_to_end};
     $users_treeview->signal_connect('button_press_event', \&users_menu_popup);
+}
+
+# Scroll treeview to end
+sub treeview_scroll_to_end {
+    my ($widget) = @_;
+    my $adj = $widget->get_vadjustment;
+    $adj->set_value($adj->upper - $adj->page_size);
 }
 
 # Menu popup
@@ -1301,6 +1303,27 @@ sub menu_popup {
             $menu->append($item);
         }
 
+        # Play as audio
+        {
+            my $item = 'Gtk2::ImageMenuItem'->new("Play as audio");
+            $item->signal_connect(
+                activate => sub {
+                    my ($id, $iter) = get_selected_entry_code();
+                    my $type = $liststore->get($iter, 7);
+                    if (defined($id) and $type eq 'video') {
+                        execute_cli_youtube_viewer("--id=$id --no-video");
+                    }
+                    elsif (defined($id) and $type eq 'playlist') {
+                        execute_cli_youtube_viewer("--pp=$id --no-video");
+                    }
+                }
+            );
+            $item->set_property(tooltip_text => "Play as audio in a new terminal");
+            $item->set_image('Gtk2::Image'->new_from_icon_name("multimedia-audio-player", q{menu}));
+            $item->show;
+            $menu->append($item);
+        }
+
         # Play with CLI youtube-viewer
         {
             my $item = 'Gtk2::ImageMenuItem'->new("Play in terminal");
@@ -1376,7 +1399,7 @@ $accel->connect(ord('d'), ['control-mask'], ['visible'], \&show_details_window);
 #$accel->connect(ord('c'), ['control-mask'], ['visible'], \&show_comments_window);
 $accel->connect(ord('s'), ['control-mask'], ['visible'], \&add_user_to_favorites);
 $accel->connect(ord('r'), ['control-mask'], ['visible'], \&show_related_videos);
-$accel->connect(ord('g'), ['control-mask'], ['visible'], \&show_user_favorited_videos);
+$accel->connect(ord('g'), ['control-mask'], ['visible'], \&show_user_favorite_videos);
 $accel->connect(ord('m'), ['control-mask'], ['visible'], \&show_videos_from_selected_author);
 $accel->connect(ord('k'), ['control-mask'], ['visible'], \&show_playlists_from_selected_author);
 $accel->connect(ord('w'), ['control-mask'], ['visible'], \&show_warnings_window);
@@ -1809,7 +1832,8 @@ sub append_categories {
         append_categories($cats, 'cat');
     }
 
-    append_categories({items => [{snippet => {title => 'Trending', assignable => 1}, id => undef}]}, 'cat');
+    append_categories({items => [{snippet => {title => 'Trending', assignable => 1}, id => undef}]},     'cat');
+    append_categories({items => [{snippet => {title => 'Popular',  assignable => 1}, id => 'popular'}]}, 'cat');
 }
 
 my $tops_liststore = $gui->get_object('liststore6');
@@ -1837,6 +1861,7 @@ sub set_youtube_tops {
 
 {
     my %channels;
+    my %removed_channels;
 
     # ------------ Usernames list window ------------ #
     sub set_usernames {
@@ -1881,7 +1906,6 @@ sub set_youtube_tops {
                          'UCUHW94eEFW7hkUMVaZz4eDg' => 'MinutePhysics',
                          'UCYeF244yNGuFefuFKqxIAXw' => 'The Royal Institution',
                          'UCX6b17PVsYBQ0ip5gyeme-Q' => 'CrashCourse',
-                         'UCwbsWIWfcOL2FiUZ2hKNJHQ' => 'UCBerkeley',
                          'UCEBb1b_L6zDS3xTUrIALZOw' => 'MIT OpenCourseWare',
                          'UCAuUUnT6oDeKwE6v1NGQxug' => 'TED',
                          'UCvBqzzvUBLCs8Y7Axb-jZew' => 'Sixty Symbols',
@@ -1894,10 +1918,15 @@ sub set_youtube_tops {
                          'UC0wbcfzV-bHhABbWGXKHwdg' => 'Utah Open Source',
                          'UCotwjyJnb-4KW7bmsOoLfkg' => 'Art of the Problem',
                          'UC7y4qaRSb5w2O8cCHOsKZDw' => 'YAPC NA',
+                         'UC1t6kKXoBvjdr8m9KJ2Fx7A' => 'Gresham College',
+                         'UCGHZpIpAWJQ-Jy_CeCdXhMA' => 'Cool Worlds',
+                         'UCXZIDlJ_DgzrEwYop2s3JOQ' => 'National Museum of Mathematics',
+                         'UCLnGGRG__uGSPLBLzyhg8dQ' => 'Oxford Mathematics',
+                         'UCmG6gHgD8JaEZVxuHWJijGQ' => 'UConn Mathematics',
                         );
         }
 
-        foreach my $channel (sort { ($channels{$a} // lc($a)) cmp($channels{$b} // lc($b)) } keys %channels) {
+        foreach my $channel (sort { CORE::fc($channels{$a} // $a) cmp CORE::fc($channels{$b} // $b) } keys %channels) {
             my $iter = $users_liststore->append;
 
             if (defined $channels{$channel}) {
@@ -1991,10 +2020,18 @@ sub set_youtube_tops {
         my $iter       = $selection->get_selected       // return;
         my $channel_id = $users_liststore->get($iter, 0);
         delete $channels{$channel_id};
+        $removed_channels{$channel_id} = 1;
         $users_liststore->remove($iter);
     }
 
     sub save_usernames_to_file {
+
+        set_usernames();    # update %channels
+
+        foreach my $id (keys %removed_channels) {
+            delete $channels{$id};
+        }
+
         open(my $fh, '>:utf8', $CONFIG{youtube_users_file}) or return;
         foreach my $channel (
                              sort { ($channels{$a} // $a) cmp($channels{$b} // $b) }
@@ -2391,6 +2428,16 @@ sub determine_image_format {
     return undef;
 }
 
+sub lwp_get {
+    my ($url) = @_;
+
+    state %cache;
+
+    my $data = $cache{$url} // $yv_obj->lwp_get($url, simple => 1);
+    $cache{$url} = $data if defined($data);
+    return $data;
+}
+
 sub get_pixbuf_thumbnail {
     my ($url, $xsize, $ysize) = @_;
 
@@ -2405,7 +2452,13 @@ sub get_pixbuf_thumbnail {
         return $cache{$key};
     }
 
-    my $thumbnail = $yv_obj->lwp_get($url, simple => 1);
+    my $thumbnail = lwp_get($url);
+
+    if (not defined($thumbnail)) {
+        if ($url =~ s{/mq([0-9])\.}{/$1.}) {
+            $thumbnail = lwp_get($url);
+        }
+    }
 
     my $pixbuf;
     if (defined $thumbnail) {
@@ -2977,7 +3030,7 @@ sub get_player_command {
         )
     );
 
-    my $has_video = $cmd =~ /\*(?:VIDEO|URL|ID)\*/;
+    my $has_video = $cmd =~ /(?:^|\s)\*(?:VIDEO|URL)\*(?:\s|\z)/;
 
     $cmd = $yv_utils->format_text(
                                   streaming => $streaming,
@@ -3090,13 +3143,12 @@ sub run_cli_youtube_viewer {
 sub get_options_as_arguments {
     my @args;
     my %options = (
-                   'no-interactive'   => q{},
-                   'resolution'       => $CONFIG{resolution},
-                   'download-dir'     => quotemeta(rel2abs($CONFIG{downloads_dir})),
-                   'fullscreen'       => $CONFIG{fullscreen}   ? q{}   : undef,
-                   'no-dash'          => $CONFIG{dash_support} ? undef : q{},
-                   'no-video'         => $CONFIG{audio_only}   ? q{}   : undef,
-                   'resolution=audio' => $CONFIG{audio_only}   ? q{}   : undef,
+                   'no-interactive' => q{},
+                   'resolution'     => $CONFIG{resolution},
+                   'download-dir'   => quotemeta(rel2abs($CONFIG{downloads_dir})),
+                   'fullscreen'     => $CONFIG{fullscreen}   ? q{}   : undef,
+                   'no-dash'        => $CONFIG{dash_support} ? undef : q{},
+                   'no-video'       => $CONFIG{audio_only}   ? q{}   : undef,
                   );
 
     while (my ($argv, $value) = each %options) {
@@ -3248,7 +3300,7 @@ sub comments_row_activated {
     return 1;
 }
 
-sub show_user_favorited_videos {
+sub show_user_favorite_videos {
     my $username = get_channel_id_for_selected_video() // return;
     favorites('channel', $username);
 }
@@ -3525,7 +3577,7 @@ if (not defined $yv_obj->get_key) {
     Glib::Idle->add(
         sub {
             die join("\n",
-                     "\nError: no API key has been set!\n\nFor creating a new YouTube API key, please see:",
+                     "\nError: no API key has been set!\n\nFor creating/setting an YouTube API key, please see:",
                      "https://github.com/trizen/youtube-viewer#logging-in\n\n");
             return 0;
         },

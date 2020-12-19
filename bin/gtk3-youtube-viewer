@@ -15,7 +15,7 @@
 #-------------------------------------------------------
 #  GTK YouTube Viewer
 #  Created on: 12 September 2010
-#  Latest edit on: 10 October 2020
+#  Latest edit on: 08 December 2020
 #  https://github.com/trizen/youtube-viewer
 #-------------------------------------------------------
 
@@ -28,7 +28,7 @@ no warnings 'once';
 my $DEVEL;                                 # true in devel mode
 use if ($DEVEL = 0), lib => qw(../lib);    # devel only
 
-use WWW::YoutubeViewer v3.7.9;
+use WWW::YoutubeViewer v3.8.0;
 use WWW::YoutubeViewer::RegularExpressions;
 
 use Gtk3 qw(-init);
@@ -86,6 +86,7 @@ my $config_file         = catfile($config_dir, "gtk-youtube-viewer.conf");
 my $youtube_users_file  = catfile($config_dir, 'youtube_users.txt');
 my $history_file        = catfile($config_dir, 'gtk-history.txt');
 my $session_file        = catfile($config_dir, 'session.dat');
+my $watch_history_file  = catfile($config_dir, 'watched.txt');
 my $authentication_file = catfile($config_dir, 'reg.dat');
 my $api_file            = catfile($config_dir, 'api.json');
 my $default_api_file    = '/etc/youtube-viewer/api.json';
@@ -101,6 +102,9 @@ foreach my $dir ($config_dir) {
 
 # Video queue for the enqueue feature
 my @VIDEO_QUEUE;
+
+# Keep track of watched videos
+my %WATCHED_VIDEOS;
 
 sub which_command {
     my ($cmd) = @_;
@@ -151,21 +155,15 @@ my %CONFIG = (
                               srt   => q{--sub-file=*SUB*},
                               audio => q{--input-slave=*AUDIO*},
                               fs    => q{--fullscreen},
-                              arg   => q{--quiet --play-and-exit --no-video-title-show --input-title-format=*TITLE*},
+                              arg   => q{--quiet --play-and-exit --no-video-title-show --input-title-format=*TITLE* *VIDEO*},
                              },
                       mpv => {
                               cmd   => q{mpv},
                               srt   => q{--sub-file=*SUB*},
                               audio => q{--audio-file=*AUDIO*},
                               fs    => q{--fullscreen},
-                              arg   => q{--really-quiet --title=*TITLE* --no-ytdl},
+                              arg   => q{--really-quiet --force-media-title=*TITLE* --no-ytdl *VIDEO*},
                              },
-                      smplayer => {
-                                   cmd => q{smplayer},
-                                   srt => q{-sub *SUB*},
-                                   fs  => q{-fullscreen},
-                                   arg => q{-close-at-end -media-title *TITLE* *URL*},
-                                  },
                      },
     video_player_selected => undef,    # autodetect it later
 
@@ -226,6 +224,8 @@ my %CONFIG = (
     fullscreen  => 0,
     audio_only  => 0,
 
+    autoscroll_to_end => 0,
+
     # youtube-dl support
     ytdl     => 1,
     ytdl_cmd => undef,    # auto-detect
@@ -249,6 +249,10 @@ my %CONFIG = (
     remember_session_max   => 10,
     save_titles_to_history => 0,
     entry_completion_limit => 10,
+
+    # Watch history
+    watch_history      => 1,
+    watch_history_file => $watch_history_file,
 );
 
 {
@@ -344,6 +348,7 @@ my %objects = (
     'comboboxtext8'          => \my $duration_combobox,
     'comboboxtext3'          => \my $caption_combobox,
     'comboboxtext4'          => \my $definition_combobox,
+    'comboboxtext10'         => \my $license_combobox,
     'comboboxtext5'          => \my $safesearch_combobox,
     'comboboxtext1'          => \my $published_within_combobox,
     'comboboxtext13'         => \my $subscriptions_order_combobox,
@@ -362,7 +367,6 @@ my %objects = (
     'clear_list_checkbutton' => \my $clear_list_checkbutton,
     'dash_checkbutton'       => \my $dash_checkbutton,
     'audio_only_checkbutton' => \my $audio_only_checkbutton,
-    'gif_spinner'            => \my $gif_spinner,
     'hbox2'                  => \my $hbox2,
     'feeds_title'            => \my $feeds_title,
     'channel_name_save'      => \my $save_channel_name_entry,
@@ -431,11 +435,10 @@ local $SIG{__DIE__} = sub {
 
 #---------------------- LOAD IMAGES ----------------------#
 my $app_icon_pixbuf       = 'Gtk3::Gdk::Pixbuf'->new_from_file(catfile($icons_path, "gtk-youtube-viewer.png"));
-my $user_icon_pixbuf      = 'Gtk3::Gdk::Pixbuf'->new_from_file_at_size(catfile($icons_path, "user.png"), 16, 16);
-my $feed_icon_pixbuf      = 'Gtk3::Gdk::Pixbuf'->new_from_file_at_size(catfile($icons_path, "feed.png"), 16, 16);
-my $feed_icon_gray_pixbuf = 'Gtk3::Gdk::Pixbuf'->new_from_file_at_size(catfile($icons_path, "feed_gray.png"), 16, 16);
+my $user_icon_pixbuf      = 'Gtk3::Gdk::Pixbuf'->new_from_file_at_size(catfile($icons_path, "user.png"),          16,  16);
+my $feed_icon_pixbuf      = 'Gtk3::Gdk::Pixbuf'->new_from_file_at_size(catfile($icons_path, "feed.png"),          16,  16);
+my $feed_icon_gray_pixbuf = 'Gtk3::Gdk::Pixbuf'->new_from_file_at_size(catfile($icons_path, "feed_gray.png"),     16,  16);
 my $default_thumb         = 'Gtk3::Gdk::Pixbuf'->new_from_file_at_size(catfile($icons_path, "default_thumb.jpg"), 160, 90);
-my $animation             = 'Gtk3::Gdk::PixbufAnimation'->new_from_file(catfile($icons_path, "spinner.gif"));
 
 # Setting application title and icon
 $mainw->set_title("$appname $version");
@@ -560,10 +563,12 @@ foreach my $path ($CONFIG{cache_dir}) {
                     my $word = $words[$i];
 
                     for (my $j = $i ; $j <= $end_p ; ++$j) {
-                        my $part = $parts[$j];
 
                         my $matched;
                         my $continue = 1;
+
+                        my $part = $parts[$j];
+
                         while ($part eq $word) {
                             $order_score += 1 - 1 / (length($word) + 1)**2;
                             $matched ||= 1;
@@ -572,8 +577,9 @@ foreach my $path ($CONFIG{cache_dir}) {
                         }
 
                         if ($matched) {
-                            $order_score += 1 - 1 / (length($word) + 1)
-                              if ($continue and index($part, $word) == 0);
+                            if ($continue and index($part, $word) == 0) {
+                                $order_score += 1 - 1 / (length($word) + 1);
+                            }
                             last;
                         }
                         elsif (index($part, $word) == 0) {
@@ -697,7 +703,7 @@ foreach my $path ($CONFIG{cache_dir}) {
                     search();
                 }
             );
-            $item->set_property(tooltip_text => $text);
+            $item->set_property(tooltip_text => "Search for „${text}”");
             $item->set_image('Gtk3::Image'->new_from_icon_name("history-view", q{menu}));
             $item->show;
             $history_menu->append($item);
@@ -868,6 +874,7 @@ $definition_combobox->set_active(0);
 $duration_combobox->set_active(0);
 $caption_combobox->set_active(0);
 $order_combobox->set_active(0);
+$license_combobox->set_active(0);
 
 # Spin button start with page
 $spin_start_with_page->set_value(1);
@@ -884,7 +891,7 @@ sub apply_configuration {
     $audio_only_checkbutton->set_active($CONFIG{audio_only});
 
     # DASH mode
-    $dash_checkbutton->set_active($CONFIG{dash_support});
+    $dash_checkbutton->set_active($CONFIG{dash_segmented});
 
     $clear_list_checkbutton->set_active($CONFIG{clear_search_list});
     $panel_account_type_combobox->set_active($CONFIG{active_panel_account_combobox});
@@ -1035,7 +1042,15 @@ sub new_image_from_pixbuf {
 # Treeview signals
 {
     $treeview->signal_connect('button_press_event', \&menu_popup);
+    $treeview->signal_connect('size-allocate',      \&treeview_scroll_to_end) if $CONFIG{autoscroll_to_end};
     $users_treeview->signal_connect('button_press_event', \&users_menu_popup);
+}
+
+# Scroll treeview to end
+sub treeview_scroll_to_end {
+    my ($widget) = @_;
+    my $adj = $widget->get_vadjustment;
+    $adj->set_value($adj->get_upper - $adj->get_page_size);
 }
 
 # Menu popup
@@ -1373,6 +1388,27 @@ sub menu_popup {
             $menu->append($item);
         }
 
+        # Play as audio
+        {
+            my $item = 'Gtk3::ImageMenuItem'->new("Play as audio");
+            $item->signal_connect(
+                activate => sub {
+                    my ($id, $iter) = get_selected_entry_code();
+                    my $type = $liststore->get($iter, 7);
+                    if (defined($id) and $type eq 'video') {
+                        execute_cli_youtube_viewer("--id=$id --no-video");
+                    }
+                    elsif (defined($id) and $type eq 'playlist') {
+                        execute_cli_youtube_viewer("--pp=$id --no-video");
+                    }
+                }
+            );
+            $item->set_property(tooltip_text => "Play as audio in a new terminal");
+            $item->set_image('Gtk3::Image'->new_from_icon_name("multimedia-audio-player", q{menu}));
+            $item->show;
+            $menu->append($item);
+        }
+
         # Play with CLI youtube-viewer
         {
             my $item = 'Gtk3::ImageMenuItem'->new("Play in terminal");
@@ -1448,7 +1484,7 @@ $accel->connect(ord('d'), ['control-mask'], ['visible'], \&show_details_window);
 #$accel->connect(ord('c'), ['control-mask'], ['visible'], \&show_comments_window);
 $accel->connect(ord('s'), ['control-mask'], ['visible'], \&add_user_to_favorites);
 $accel->connect(ord('r'), ['control-mask'], ['visible'], \&show_related_videos);
-$accel->connect(ord('g'), ['control-mask'], ['visible'], \&show_user_favorited_videos);
+$accel->connect(ord('g'), ['control-mask'], ['visible'], \&show_user_favorite_videos);
 $accel->connect(ord('m'), ['control-mask'], ['visible'], \&show_videos_from_selected_author);
 $accel->connect(ord('k'), ['control-mask'], ['visible'], \&show_playlists_from_selected_author);
 $accel->connect(ord('w'), ['control-mask'], ['visible'], \&show_warnings_window);
@@ -1763,6 +1799,11 @@ sub combobox_definition_changed {
     $yv_obj->set_videoDefinition($text);
 }
 
+sub combobox_license_changed {
+    my $text = $license_combobox->get_active_text;
+    $yv_obj->set_videoLicense($text);
+}
+
 sub combobox_published_within_changed {
     my $period = $published_within_combobox->get_active_text;
 
@@ -1816,7 +1857,7 @@ sub toggled_audio_only {
 
 # DASH mode
 sub toggled_dash_support {
-    $CONFIG{dash_support} = $dash_checkbutton->get_active() || 0;
+    $CONFIG{dash_segmented} = $dash_checkbutton->get_active() || 0;
 }
 
 # Check buttons toggles
@@ -1900,7 +1941,8 @@ sub append_categories {
         append_categories($cats, 'cat');
     }
 
-    append_categories({items => [{snippet => {title => 'Trending', assignable => 1}, id => undef}]}, 'cat');
+    append_categories({items => [{snippet => {title => 'Trending', assignable => 1}, id => undef}]},     'cat');
+    append_categories({items => [{snippet => {title => 'Popular',  assignable => 1}, id => 'popular'}]}, 'cat');
 }
 
 my $tops_liststore = $gui->get_object('liststore6');
@@ -1933,6 +1975,7 @@ sub set_youtube_tops {
 
 {
     my %channels;
+    my %removed_channels;
 
     # ------------ Usernames list window ------------ #
     sub set_usernames {
@@ -1977,7 +2020,6 @@ sub set_youtube_tops {
                          'UCUHW94eEFW7hkUMVaZz4eDg' => 'MinutePhysics',
                          'UCYeF244yNGuFefuFKqxIAXw' => 'The Royal Institution',
                          'UCX6b17PVsYBQ0ip5gyeme-Q' => 'CrashCourse',
-                         'UCwbsWIWfcOL2FiUZ2hKNJHQ' => 'UCBerkeley',
                          'UCEBb1b_L6zDS3xTUrIALZOw' => 'MIT OpenCourseWare',
                          'UCAuUUnT6oDeKwE6v1NGQxug' => 'TED',
                          'UCvBqzzvUBLCs8Y7Axb-jZew' => 'Sixty Symbols',
@@ -1990,10 +2032,15 @@ sub set_youtube_tops {
                          'UC0wbcfzV-bHhABbWGXKHwdg' => 'Utah Open Source',
                          'UCotwjyJnb-4KW7bmsOoLfkg' => 'Art of the Problem',
                          'UC7y4qaRSb5w2O8cCHOsKZDw' => 'YAPC NA',
+                         'UC1t6kKXoBvjdr8m9KJ2Fx7A' => 'Gresham College',
+                         'UCGHZpIpAWJQ-Jy_CeCdXhMA' => 'Cool Worlds',
+                         'UCXZIDlJ_DgzrEwYop2s3JOQ' => 'National Museum of Mathematics',
+                         'UCLnGGRG__uGSPLBLzyhg8dQ' => 'Oxford Mathematics',
+                         'UCmG6gHgD8JaEZVxuHWJijGQ' => 'UConn Mathematics',
                         );
         }
 
-        foreach my $channel (sort { ($channels{$a} // lc($a)) cmp($channels{$b} // lc($b)) } keys %channels) {
+        foreach my $channel (sort { CORE::fc($channels{$a} // $a) cmp CORE::fc($channels{$b} // $b) } keys %channels) {
             my $iter = $users_liststore->append;
 
             if (defined $channels{$channel}) {
@@ -2097,10 +2144,18 @@ sub set_youtube_tops {
         my $iter       = $selection->get_selected       // return;
         my $channel_id = $users_liststore->get($iter, 0);
         delete $channels{$channel_id};
+        $removed_channels{$channel_id} = 1;
         $users_liststore->remove($iter);
     }
 
     sub save_usernames_to_file {
+
+        set_usernames();    # update %channels
+
+        foreach my $id (keys %removed_channels) {
+            delete $channels{$id};
+        }
+
         open(my $fh, '>:utf8', $CONFIG{youtube_users_file}) or return;
         foreach my $channel (
                              sort { ($channels{$a} // $a) cmp($channels{$b} // $b) }
@@ -2425,12 +2480,23 @@ sub get_code {
 
             my $type = $liststore->get($iter, 7);
 
-            $type eq 'playlist'                                 ? list_playlist($code)
-              : ($type eq 'channel' || $type eq 'subscription') ? uploads('channel', $code)
-              : $type eq 'next_page' && $code ne ''             ? do {
+            if ($type eq 'playlist') {
+                list_playlist($code);
+            }
+            elsif ($type eq 'channel' or $type eq 'subscription') {
+                uploads('channel', $code);
+            }
+            elsif ($type eq 'next_page' and $code ne '') {
 
+                my $results;
                 my $next_page_token = $liststore->get($iter, 5);
-                my $results         = $yv_obj->from_page_token($code, $next_page_token);
+
+                if ($next_page_token =~ /^watched (\d+)/) {
+                    $results = get_watched_videos_from_file($1);
+                }
+                else {
+                    $results = $yv_obj->from_page_token($code, $next_page_token);
+                }
 
                 if ($yv_utils->has_entries($results)) {
                     my $label = '<big><b>' . ('=' x 20) . '</b></big>';
@@ -2442,13 +2508,12 @@ sub get_code {
                 }
 
                 display_results($results);
-              }
-              : $type eq 'video' ? (
-                                    $CONFIG{audio_only}
-                                    ? execute_cli_youtube_viewer("--id=$code")
-                                    : play_video($yv_obj->parse_json_string($liststore->get($iter, 8)))
-                                   )
-              : ();
+            }
+            elsif ($type eq 'video') {
+                $CONFIG{audio_only}
+                  ? execute_cli_youtube_viewer("--id=$code")
+                  : play_video($yv_obj->parse_json_string($liststore->get($iter, 8)));
+            }
 
             return 0;
         },
@@ -2475,6 +2540,8 @@ sub append_next_page {
                     5 => $token,
                     7 => 'next_page',
                    );
+
+    return $iter;
 }
 
 sub determine_image_format {
@@ -2557,8 +2624,30 @@ sub get_pixbuf_thumbnail_from_content {
 
 sub get_pixbuf_thumbnail_from_url {
     my ($url, $xsize, $ysize) = @_;
+
+    state %cache;
+
+    my $key = "$url $xsize $ysize";
+
+    if (exists $cache{$key}) {
+        return $cache{$key};
+    }
+
     my $thumbnail = lwp_get($url);
-    return get_pixbuf_thumbnail_from_content($thumbnail, $xsize, $ysize);
+
+    if (not defined($thumbnail)) {
+        if ($url =~ s{/mq([0-9])\.}{/$1.}) {
+            $thumbnail = lwp_get($url);
+        }
+    }
+
+    my $pixbuf = get_pixbuf_thumbnail_from_content($thumbnail, $xsize, $ysize);
+
+    if (defined($pixbuf)) {
+        $cache{$key} = $pixbuf;
+    }
+
+    return $pixbuf;
 }
 
 sub get_pixbuf_thumbnail_from_entry {
@@ -2576,6 +2665,54 @@ sub get_pixbuf_thumbnail_from_entry {
     my $pixbuf        = get_pixbuf_thumbnail_from_content($thumbnail_data, ($square_format ? (160, 160) : ()));
 
     return $pixbuf;
+}
+
+sub get_watched_videos_from_file {
+    my ($page) = @_;
+
+    $page //= $yv_obj->get_page;
+
+    my @ids;
+
+    if ($CONFIG{watch_history} and open(my $fh, '<', $CONFIG{watch_history_file})) {
+        chomp(@ids = <$fh>);
+        close $fh;
+    }
+    else {
+        @ids = keys %WATCHED_VIDEOS;
+    }
+
+    my %seen;
+
+    # Keep the most recent ones
+    @ids = reverse(@ids);
+    @ids = grep { !$seen{$_}++ } @ids;
+
+    my $maxResults = $yv_obj->get_maxResults;
+
+    if ($page >= 1 and scalar(@ids) >= $maxResults) {
+        @ids = grep { defined } @ids[($page - 1) * $maxResults .. $page * $maxResults - 1];
+    }
+
+    my %results;
+    my @videos;
+
+    foreach my $id (@ids) {
+        push @videos, {id => {kind => "youtube#video", videoId => $id},};
+    }
+
+#<<<
+    $results{items}         = \@videos;
+    $results{pageInfo}      = {resultsPerPage => scalar(@videos), totalResults => scalar(@videos)};
+    $results{nextPageToken} = sprintf("%s %d", 'watched', $page+1);
+#>>>
+
+    scalar {results => \%results, url => "watched videos"};
+}
+
+sub display_watched_videos {
+    $liststore->clear if $CONFIG{clear_search_list};
+    display_results(get_watched_videos_from_file($yv_obj->get_page));
 }
 
 sub display_results {
@@ -2905,11 +3042,10 @@ sub add_playlist_entry {
                   . encode_entities($row_description)
                   . '</i>');
 
-    my $num_items_template = "<b>$symbols{numero}</b>  %d items\n";
-    my $num_items_text     = "";
+    my $num_items_text = $yv_utils->get_playlist_item_count($playlist) // "";
 
-    if (defined($playlist->{contentDetails}{itemCount})) {
-        $num_items_text = sprintf($num_items_template, $playlist->{contentDetails}->{itemCount});
+    if ($num_items_text ne '') {
+        $num_items_text = sprintf("<b>$symbols{numero}</b>  %d items\n", $num_items_text);
     }
 
     my $type_label = reflow_text("<b>$symbols{diamond}</b>  " . 'Playlist' . "\n" . $num_items_text);
@@ -3124,7 +3260,7 @@ sub get_player_command {
         )
     );
 
-    my $has_video = $cmd =~ /\*(?:VIDEO|URL|ID)\*/;
+    my $has_video = $cmd =~ /(?:^|\s)\*(?:VIDEO|URL)\*(?:\s|\z)/;
 
     $cmd = $yv_utils->format_text(
                                   streaming => $streaming,
@@ -3138,6 +3274,20 @@ sub get_player_command {
     }
 
     $has_video ? $cmd : join(' ', $cmd, quotemeta($streaming->{streaming}{url}));
+}
+
+sub save_watched_video {
+    my ($video_id) = @_;
+
+    $WATCHED_VIDEOS{$video_id} = 1;
+
+    if ($CONFIG{watch_history}) {
+        open(my $fh, '>>', $CONFIG{watch_history_file}) or return;
+        say {$fh} $video_id;
+        close $fh;
+    }
+
+    return 1;
 }
 
 sub play_video {
@@ -3168,7 +3318,13 @@ sub play_video {
     }
 
     my $code = execute_external_program($command);
-    warn "[!] Can't play this video -- player exited with code: $code\n" if $code != 0;
+
+    if ($code == 0) {
+        save_watched_video($video_id);
+    }
+    else {
+        warn "[!] Can't play this video -- player exited with code: $code\n";
+    }
 
     return 1;
 }
@@ -3237,13 +3393,12 @@ sub run_cli_youtube_viewer {
 sub get_options_as_arguments {
     my @args;
     my %options = (
-                   'no-interactive'   => q{},
-                   'resolution'       => $CONFIG{resolution},
-                   'download-dir'     => quotemeta(rel2abs($CONFIG{downloads_dir})),
-                   'fullscreen'       => $CONFIG{fullscreen}   ? q{}   : undef,
-                   'no-dash'          => $CONFIG{dash_support} ? undef : q{},
-                   'no-video'         => $CONFIG{audio_only}   ? q{}   : undef,
-                   'resolution=audio' => $CONFIG{audio_only}   ? q{}   : undef,
+                   'no-interactive'    => q{},
+                   'resolution'        => $CONFIG{resolution},
+                   'download-dir'      => quotemeta(rel2abs($CONFIG{downloads_dir})),
+                   'fullscreen'        => $CONFIG{fullscreen}     ? q{}   : undef,
+                   'no-dash-segmented' => $CONFIG{dash_segmented} ? undef : q{},
+                   'no-video'          => $CONFIG{audio_only}     ? q{}   : undef,
                   );
 
     while (my ($argv, $value) = each %options) {
@@ -3395,7 +3550,7 @@ sub comments_row_activated {
     return 1;
 }
 
-sub show_user_favorited_videos {
+sub show_user_favorite_videos {
     my $username = get_channel_id_for_selected_video() // return;
     favorites('channel', $username);
 }
@@ -3747,7 +3902,7 @@ if (not defined $yv_obj->get_key) {
     Glib::Idle->add(
         sub {
             die join("\n",
-                     "\nError: no API key has been set!\n\nFor creating a new YouTube API key, please see:",
+                     "\nError: no API key has been set!\n\nFor creating/setting an YouTube API key, please see:",
                      "https://github.com/trizen/youtube-viewer#logging-in\n\n");
             return 0;
         },

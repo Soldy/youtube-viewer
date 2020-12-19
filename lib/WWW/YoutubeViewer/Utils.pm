@@ -433,6 +433,105 @@ sub get_playlist_id {
       : $info->{id};
 }
 
+sub get_playlist_item_count {
+    my ($self, $info) = @_;
+    $info->{contentDetails}{itemCount} // 0;
+}
+
+sub get_channel_subscriber_count {
+    my ($self, $info) = @_;
+    $info->{statistics}{subscriberCount} // 0;
+}
+
+sub get_channel_video_count {
+    my ($self, $info) = @_;
+    $info->{statistics}{videoCount} // 0;
+}
+
+sub get_channel_view_count {
+    my ($self, $info) = @_;
+    $info->{statistics}{viewCount} // 0;
+}
+
+sub read_lines_from_file {
+    my ($self, $file, $mode) = @_;
+
+    $mode //= '<';
+
+    open(my $fh, $mode, $file) or return;
+    chomp(my @ids = <$fh>);
+    close $fh;
+
+    my %seen;
+
+    # Keep the most recent ones
+    @ids = reverse(@ids);
+    @ids = grep { !$seen{$_}++ } @ids;
+
+    return @ids;
+}
+
+sub local_playlist_snippet {
+    my ($self, $id) = @_;
+
+    my $first_video_id = do {
+        open(my $fh, '<', $id) or return;
+        chomp(my $video_id = <$fh>);
+        close $fh;
+        $video_id;
+    };
+
+    my $title = File::Basename::basename($id);
+
+    $title =~ s/\.txt\z//;
+    $title =~ s/ -- PL[-\w]+\z//;
+    $title = ucfirst($title);
+
+    scalar {
+            id             => {kind => "youtube#playlist", playlistId => $id},
+            contentDetails => {
+                               itemCount => scalar $self->read_lines_from_file($id),
+                              },
+            snippet => {
+                        channelId    => "mine",
+                        channelTitle => "<local playlist>",
+                        description  => $id,
+                        thumbnails   => {
+                                       default => {
+                                                   height => 90,
+                                                   url    => "https://i.ytimg.com/vi/$first_video_id/default.jpg",
+                                                   width  => 120,
+                                                  },
+                                       high => {
+                                                height => 360,
+                                                url    => "https://i.ytimg.com/vi/$first_video_id/hqdefault.jpg",
+                                                width  => 480,
+                                               },
+                                       medium => {
+                                                  height => 180,
+                                                  url    => "https://i.ytimg.com/vi/$first_video_id/mqdefault.jpg",
+                                                  width  => 320,
+                                                 },
+                                      },
+                        title => $title,
+                       },
+           };
+}
+
+sub local_channel_snippet {
+    my ($self, $id, $title) = @_;
+
+    scalar {
+            id      => {channelId => $id, kind => "youtube#channel"},
+            snippet => {
+                        channelId    => $id,
+                        channelTitle => $title,
+                        description  => "<local channel>",
+                        title        => $title,
+                       },
+           };
+}
+
 =head2 get_description($info)
 
 Get description.
@@ -470,7 +569,7 @@ sub get_thumbnail_url {
 
 sub get_channel_title {
     my ($self, $info) = @_;
-    $info->{snippet}{channelTitle} || $self->get_channel_id($info);
+    $info->{snippet}{channelTitle} // $info->{title} // $self->get_channel_id($info);
 }
 
 sub get_id {
@@ -478,9 +577,14 @@ sub get_id {
     $info->{id};
 }
 
+sub get_country {
+    my ($self, $info) = @_;
+    $info->{snippet}{country};
+}
+
 sub get_channel_id {
     my ($self, $info) = @_;
-    $info->{snippet}{resourceId}{channelId} // $info->{snippet}{channelId};
+    $info->{snippet}{resourceId}{channelId} // $info->{snippet}{channelId} // eval { $info->{id}{channelId} } // $info->{id};
 }
 
 sub get_category_id {
@@ -581,39 +685,44 @@ sub get_views {
     $info->{statistics}{viewCount} // 0;
 }
 
+sub short_human_number {
+    my ($self, $int) = @_;
+
+    if ($int < 1000) {
+        return $int;
+    }
+
+    if ($int >= 10 * 1e9) {    # ten billions
+        return sprintf("%dB", int($int / 1e9));
+    }
+
+    if ($int >= 1e9) {         # billions
+        return sprintf("%.2gB", $int / 1e9);
+    }
+
+    if ($int >= 10 * 1e6) {    # ten millions
+        return sprintf("%dM", int($int / 1e6));
+    }
+
+    if ($int >= 1e6) {         # millions
+        return sprintf("%.2gM", $int / 1e6);
+    }
+
+    if ($int >= 10 * 1e3) {    # ten thousands
+        return sprintf("%dK", int($int / 1e3));
+    }
+
+    if ($int >= 1e3) {         # thousands
+        return sprintf("%.2gK", $int / 1e3);
+    }
+
+    return $int;
+}
+
 sub get_views_approx {
     my ($self, $info) = @_;
-    my $views = $info->{statistics}{viewCount} // 0;
-
-    if ($views < 1000) {
-        return $views;
-    }
-
-    if ($views >= 10 * 1e9) {    # ten billions
-        return sprintf("%dB", int($views / 1e9));
-    }
-
-    if ($views >= 1e9) {         # billions
-        return sprintf("%.2gB", $views / 1e9);
-    }
-
-    if ($views >= 10 * 1e6) {    # ten millions
-        return sprintf("%dM", int($views / 1e6));
-    }
-
-    if ($views >= 1e6) {         # millions
-        return sprintf("%.2gM", $views / 1e6);
-    }
-
-    if ($views >= 10 * 1e3) {    # ten thousands
-        return sprintf("%dK", int($views / 1e3));
-    }
-
-    if ($views >= 1e3) {         # thousands
-        return sprintf("%.2gK", $views / 1e3);
-    }
-
-    return $views;
+    my $views = $self->get_views($info);
+    $self->short_human_number($views);
 }
 
 sub get_likes {
